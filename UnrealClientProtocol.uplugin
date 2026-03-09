@@ -1,0 +1,21 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "UnrealClientProtocol",
+	"Description": "TCP bridge that exposes Unreal Engine reflection to external AI agents via JSON commands.",
+	"Category": "AI",
+	"CreatedBy": "Italink",
+	"CreatedByURL": "https://github.com/Italink",
+	"DocsURL": "https://github.com/Italink/UnrealClientProtocol#readme",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Modules": [
+		{
+			"Name": "UnrealClientProtocol",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
