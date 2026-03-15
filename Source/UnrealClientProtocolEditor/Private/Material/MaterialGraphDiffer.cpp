@@ -23,6 +23,7 @@
 #include "Editor.h"
 #include "IMaterialEditor.h"
 #include "MaterialGraph/MaterialGraph.h"
+#include "MaterialGraph/MaterialGraphNode.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUCP, Log, All);
 
@@ -304,10 +305,27 @@ void FMaterialGraphDiffer::MatchNodes(
 
 	TSet<int32> MatchedOld;
 
+	auto GetKeyProp = [](const FMGNodeIR& N) -> FString
+	{
+		if (const FString* Val = N.Properties.Find(TEXT("ParameterName")))
+		{
+			return *Val;
+		}
+		if (const FString* Val = N.Properties.Find(TEXT("Texture")))
+		{
+			return *Val;
+		}
+		if (const FString* Val = N.Properties.Find(TEXT("MaterialFunction")))
+		{
+			return *Val;
+		}
+		return FString();
+	};
+
+	// Pass 1: Match by Guid
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
 		const FMGNodeIR& NewNode = NewIR.Nodes[NewIdx];
-
 		if (NewNode.Guid.IsValid())
 		{
 			if (int32* OldIdx = OldGuidMap.Find(NewNode.Guid))
@@ -316,29 +334,25 @@ void FMaterialGraphDiffer::MatchNodes(
 				{
 					OutNewToOld.Add(NewIdx, *OldIdx);
 					MatchedOld.Add(*OldIdx);
-					continue;
 				}
 			}
 		}
+	}
 
-		auto GetKeyProp = [](const FMGNodeIR& N) -> FString
+	// Pass 2: Match by ClassName + KeyProp (ParameterName / Texture / MaterialFunction)
+	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
+	{
+		if (OutNewToOld.Contains(NewIdx))
 		{
-			if (const FString* Val = N.Properties.Find(TEXT("ParameterName")))
-			{
-				return *Val;
-			}
-			if (const FString* Val = N.Properties.Find(TEXT("Texture")))
-			{
-				return *Val;
-			}
-			if (const FString* Val = N.Properties.Find(TEXT("MaterialFunction")))
-			{
-				return *Val;
-			}
-			return FString();
-		};
+			continue;
+		}
 
+		const FMGNodeIR& NewNode = NewIR.Nodes[NewIdx];
 		FString NewKey = GetKeyProp(NewNode);
+		if (NewKey.IsEmpty())
+		{
+			continue;
+		}
 
 		for (int32 OldIdx = 0; OldIdx < OldIR.Nodes.Num(); ++OldIdx)
 		{
@@ -348,19 +362,40 @@ void FMaterialGraphDiffer::MatchNodes(
 			}
 
 			const FMGNodeIR& OldNode = OldIR.Nodes[OldIdx];
-			if (OldNode.ClassName != NewNode.ClassName)
-			{
-				continue;
-			}
-
-			FString OldKey = GetKeyProp(OldNode);
-
-			if (!OldKey.IsEmpty() && OldKey == NewKey)
+			if (OldNode.ClassName == NewNode.ClassName && GetKeyProp(OldNode) == NewKey)
 			{
 				OutNewToOld.Add(NewIdx, OldIdx);
 				MatchedOld.Add(OldIdx);
 				break;
 			}
+		}
+	}
+
+	// Pass 3: Match remaining unmatched nodes by ClassName alone (reuse orphaned nodes)
+	TMultiMap<FString, int32> UnmatchedOldByClass;
+	for (int32 OldIdx = 0; OldIdx < OldIR.Nodes.Num(); ++OldIdx)
+	{
+		if (!MatchedOld.Contains(OldIdx))
+		{
+			UnmatchedOldByClass.Add(OldIR.Nodes[OldIdx].ClassName, OldIdx);
+		}
+	}
+
+	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
+	{
+		if (OutNewToOld.Contains(NewIdx))
+		{
+			continue;
+		}
+
+		const FString& ClassName = NewIR.Nodes[NewIdx].ClassName;
+		for (auto It = UnmatchedOldByClass.CreateKeyIterator(ClassName); It; ++It)
+		{
+			int32 OldIdx = It.Value();
+			OutNewToOld.Add(NewIdx, OldIdx);
+			MatchedOld.Add(OldIdx);
+			It.RemoveCurrent();
+			break;
 		}
 	}
 }
@@ -910,16 +945,42 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	// Phase 6: Relayout, recompile and refresh editor UI
+	// Phase 6: Clean orphaned nodes, relayout, recompile and refresh editor UI
 	if (Material)
 	{
-		UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
-		UMaterialEditingLibrary::RecompileMaterial(Material);
-
+		// RebuildGraph first so GetUnusedExpressions can analyze connectivity
 		if (Material->MaterialGraph)
 		{
 			Material->MaterialGraph->RebuildGraph();
 		}
+
+		// Remove orphaned (unreachable) expressions
+		if (Material->MaterialGraph)
+		{
+			TArray<UEdGraphNode*> UnusedNodes;
+			Material->MaterialGraph->GetUnusedExpressions(UnusedNodes);
+			for (UEdGraphNode* Node : UnusedNodes)
+			{
+				UMaterialGraphNode* GraphNode = Cast<UMaterialGraphNode>(Node);
+				if (!GraphNode || !GraphNode->MaterialExpression)
+				{
+					continue;
+				}
+				Result.NodesRemoved.Add(FString::Printf(TEXT("(orphaned) %s"),
+					*FMaterialExpressionClassCache::Get().GetSerializableName(GraphNode->MaterialExpression->GetClass())));
+				UMaterialExpression* Expr = GraphNode->MaterialExpression;
+				Material->GetExpressionCollection().RemoveExpression(Expr);
+				Material->RemoveExpressionParameter(Expr);
+				Expr->MarkAsGarbage();
+			}
+			if (UnusedNodes.Num() > 0)
+			{
+				Material->MaterialGraph->RebuildGraph();
+			}
+		}
+
+		UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
+		UMaterialEditingLibrary::RecompileMaterial(Material);
 
 		if (GEditor)
 		{
