@@ -1,8 +1,8 @@
 // MIT License - Copyright (c) 2025 Italink
 
-#include "MaterialGraphDiffer.h"
-#include "MaterialExpressionClassCache.h"
-#include "MaterialGraphSerializer.h"
+#include "Material/MaterialGraphDiffer.h"
+#include "Material/MaterialExpressionClassCache.h"
+#include "Material/MaterialGraphSerializer.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
@@ -22,6 +22,7 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
 #include "IMaterialEditor.h"
+#include "MaterialGraph/MaterialGraph.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUCP, Log, All);
 
@@ -565,7 +566,6 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 	const FMGGraphIR& NewIR)
 {
 	FMGDiffResult Result;
-	Result.bSuccess = true;
 
 	FMaterialExpressionClassCache::Get().Build();
 
@@ -610,7 +610,6 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 				UMaterialEditingLibrary::DeleteMaterialExpressionInFunction(MaterialFunction, OldNode.Expression);
 			}
 			Result.NodesRemoved.Add(FString::Printf(TEXT("N%d %s"), OldNode.Index, *OldNode.ClassName));
-			Result.bRelayout = true;
 		}
 	}
 
@@ -631,7 +630,6 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 			if (!ExprClass)
 			{
 				UE_LOG(LogUCP, Error, TEXT("WriteGraph: Unknown expression class: %s"), *NewNode.ClassName);
-				Result.bSuccess = false;
 				continue;
 			}
 
@@ -648,7 +646,6 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 			if (!NewExpr)
 			{
 				UE_LOG(LogUCP, Error, TEXT("WriteGraph: Failed to create expression: %s"), *NewNode.ClassName);
-				Result.bSuccess = false;
 				continue;
 			}
 
@@ -657,7 +654,6 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 
 			NewIndexToExpr.Add(NewNode.Index, NewExpr);
 			Result.NodesAdded.Add(FString::Printf(TEXT("N%d %s"), NewNode.Index, *NewNode.ClassName));
-			Result.bRelayout = true;
 		}
 	}
 
@@ -914,37 +910,101 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	// Phase 6: Relayout if needed, then recompile and refresh editor UI
-	if (Result.bRelayout)
-	{
-		if (Material)
-		{
-			UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
-		}
-		else if (MaterialFunction)
-		{
-			UMaterialEditingLibrary::LayoutMaterialFunctionExpressions(MaterialFunction);
-		}
-	}
-
+	// Phase 6: Relayout, recompile and refresh editor UI
 	if (Material)
 	{
+		UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
 		UMaterialEditingLibrary::RecompileMaterial(Material);
+
+		if (Material->MaterialGraph)
+		{
+			Material->MaterialGraph->RebuildGraph();
+		}
 
 		if (GEditor)
 		{
 			if (IAssetEditorInstance* EditorInstance = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(Material, false))
 			{
-				if (!Material->IsA(UMaterialInstanceDynamic::StaticClass()))
+				IMaterialEditor* MaterialEditor = static_cast<IMaterialEditor*>(EditorInstance);
+				UMaterialInterface* EditorMaterial = MaterialEditor->GetMaterialInterface();
+				if (EditorMaterial && EditorMaterial != Material)
 				{
-					IMaterialEditor* MaterialEditor = static_cast<IMaterialEditor*>(EditorInstance);
-					MaterialEditor->UpdateMaterialAfterGraphChange();
+					UMaterial* PreviewMaterial = Cast<UMaterial>(EditorMaterial);
+					if (PreviewMaterial)
+					{
+						PreviewMaterial->GetExpressionCollection().Empty();
+						for (UMaterialExpression* Expr : Material->GetExpressions())
+						{
+							UMaterialExpression* DupExpr = Cast<UMaterialExpression>(StaticDuplicateObject(Expr, PreviewMaterial));
+							if (DupExpr)
+							{
+								DupExpr->Material = PreviewMaterial;
+								PreviewMaterial->GetExpressionCollection().AddExpression(DupExpr);
+							}
+						}
+
+						for (int32 i = 0; i < MP_MAX; ++i)
+						{
+							EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
+							FExpressionInput* OrigInput = Material->GetExpressionInputForProperty(Prop);
+							FExpressionInput* PreviewInput = PreviewMaterial->GetExpressionInputForProperty(Prop);
+							if (OrigInput && PreviewInput)
+							{
+								if (OrigInput->Expression)
+								{
+									int32 OrigIdx = Material->GetExpressions().IndexOfByKey(OrigInput->Expression);
+									if (OrigIdx != INDEX_NONE && OrigIdx < PreviewMaterial->GetExpressions().Num())
+									{
+										PreviewInput->Expression = PreviewMaterial->GetExpressions()[OrigIdx];
+										PreviewInput->OutputIndex = OrigInput->OutputIndex;
+										PreviewInput->Mask = OrigInput->Mask;
+										PreviewInput->MaskR = OrigInput->MaskR;
+										PreviewInput->MaskG = OrigInput->MaskG;
+										PreviewInput->MaskB = OrigInput->MaskB;
+										PreviewInput->MaskA = OrigInput->MaskA;
+									}
+								}
+								else
+								{
+									PreviewInput->Expression = nullptr;
+								}
+							}
+						}
+
+						for (int32 i = 0; i < PreviewMaterial->GetExpressions().Num(); ++i)
+						{
+							UMaterialExpression* PreviewExpr = PreviewMaterial->GetExpressions()[i];
+							for (FExpressionInputIterator It(PreviewExpr); It; ++It)
+							{
+								if (It->Expression)
+								{
+									int32 OrigIdx = Material->GetExpressions().IndexOfByKey(It->Expression);
+									if (OrigIdx != INDEX_NONE && OrigIdx < PreviewMaterial->GetExpressions().Num())
+									{
+										It->Expression = PreviewMaterial->GetExpressions()[OrigIdx];
+									}
+									else
+									{
+										It->Expression = nullptr;
+									}
+								}
+							}
+						}
+
+						if (PreviewMaterial->MaterialGraph)
+						{
+							PreviewMaterial->MaterialGraph->RebuildGraph();
+						}
+
+						MaterialEditor->UpdateMaterialAfterGraphChange();
+					}
 				}
 			}
 		}
 	}
 	else if (MaterialFunction)
 	{
+		UMaterialEditingLibrary::LayoutMaterialFunctionExpressions(MaterialFunction);
 		UMaterialEditingLibrary::UpdateMaterialFunction(MaterialFunction, nullptr);
 	}
 
@@ -954,7 +1014,6 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 FString FMaterialGraphDiffer::DiffResultToJson(const FMGDiffResult& Result)
 {
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
-	Root->SetBoolField(TEXT("success"), Result.bSuccess);
 
 	TSharedPtr<FJsonObject> Diff = MakeShared<FJsonObject>();
 
@@ -974,8 +1033,6 @@ FString FMaterialGraphDiffer::DiffResultToJson(const FMGDiffResult& Result)
 	Diff->SetArrayField(TEXT("links_added"), ToJsonArray(Result.LinksAdded));
 	Diff->SetArrayField(TEXT("links_removed"), ToJsonArray(Result.LinksRemoved));
 	Root->SetObjectField(TEXT("diff"), Diff);
-
-	Root->SetBoolField(TEXT("relayout"), Result.bRelayout);
 
 	FString OutputString;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);

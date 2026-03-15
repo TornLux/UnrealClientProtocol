@@ -1,7 +1,7 @@
 // MIT License - Copyright (c) 2025 Italink
 
-#include "MaterialGraphSerializer.h"
-#include "MaterialExpressionClassCache.h"
+#include "Material/MaterialGraphSerializer.h"
+#include "Material/MaterialExpressionClassCache.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"

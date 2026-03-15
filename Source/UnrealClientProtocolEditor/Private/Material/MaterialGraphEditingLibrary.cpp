@@ -1,8 +1,8 @@
 // MIT License - Copyright (c) 2025 Italink
 
-#include "UCPMaterialGraphLibrary.h"
-#include "MaterialGraphSerializer.h"
-#include "MaterialGraphDiffer.h"
+#include "Material/MaterialGraphEditingLibrary.h"
+#include "Material/MaterialGraphSerializer.h"
+#include "Material/MaterialGraphDiffer.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
@@ -11,30 +11,20 @@
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogMaterialGraphEditing, Log, All);
+
 static UObject* LoadMaterialAsset(const FString& AssetPath)
 {
-	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
-	return Asset;
+	return StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
 }
 
-static FString MakeErrorJson(const FString& Error)
-{
-	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
-	Root->SetBoolField(TEXT("success"), false);
-	Root->SetStringField(TEXT("error"), Error);
-
-	FString OutputString;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
-	FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
-	return OutputString;
-}
-
-FString UMaterialGraphLibrary::ReadGraph(const FString& AssetPath, const FString& ScopeName)
+FString UMaterialGraphEditingLibrary::ReadGraph(const FString& AssetPath, const FString& ScopeName)
 {
 	UObject* Asset = LoadMaterialAsset(AssetPath);
 	if (!Asset)
 	{
-		return MakeErrorJson(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+		UE_LOG(LogMaterialGraphEditing, Error, TEXT("ReadGraph: Asset not found: %s"), *AssetPath);
+		return FString();
 	}
 
 	if (UMaterial* Material = Cast<UMaterial>(Asset))
@@ -47,15 +37,17 @@ FString UMaterialGraphLibrary::ReadGraph(const FString& AssetPath, const FString
 		return FMaterialGraphSerializer::Serialize(MaterialFunction, ScopeName);
 	}
 
-	return MakeErrorJson(FString::Printf(TEXT("Asset is not a Material or MaterialFunction: %s"), *AssetPath));
+	UE_LOG(LogMaterialGraphEditing, Error, TEXT("ReadGraph: Asset is not a Material or MaterialFunction: %s"), *AssetPath);
+	return FString();
 }
 
-FString UMaterialGraphLibrary::WriteGraph(const FString& AssetPath, const FString& ScopeName, const FString& GraphText)
+FString UMaterialGraphEditingLibrary::WriteGraph(const FString& AssetPath, const FString& ScopeName, const FString& GraphText)
 {
 	UObject* Asset = LoadMaterialAsset(AssetPath);
 	if (!Asset)
 	{
-		return MakeErrorJson(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+		UE_LOG(LogMaterialGraphEditing, Error, TEXT("WriteGraph: Asset not found: %s"), *AssetPath);
+		return FString();
 	}
 
 	FMGDiffResult Result;
@@ -70,18 +62,20 @@ FString UMaterialGraphLibrary::WriteGraph(const FString& AssetPath, const FStrin
 	}
 	else
 	{
-		return MakeErrorJson(FString::Printf(TEXT("Asset is not a Material or MaterialFunction: %s"), *AssetPath));
+		UE_LOG(LogMaterialGraphEditing, Error, TEXT("WriteGraph: Asset is not a Material or MaterialFunction: %s"), *AssetPath);
+		return FString();
 	}
 
 	return FMaterialGraphDiffer::DiffResultToJson(Result);
 }
 
-FString UMaterialGraphLibrary::Relayout(const FString& AssetPath)
+FString UMaterialGraphEditingLibrary::Relayout(const FString& AssetPath)
 {
 	UObject* Asset = LoadMaterialAsset(AssetPath);
 	if (!Asset)
 	{
-		return MakeErrorJson(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+		UE_LOG(LogMaterialGraphEditing, Error, TEXT("Relayout: Asset not found: %s"), *AssetPath);
+		return FString();
 	}
 
 	if (UMaterial* Material = Cast<UMaterial>(Asset))
@@ -94,24 +88,20 @@ FString UMaterialGraphLibrary::Relayout(const FString& AssetPath)
 	}
 	else
 	{
-		return MakeErrorJson(FString::Printf(TEXT("Asset is not a Material or MaterialFunction: %s"), *AssetPath));
+		UE_LOG(LogMaterialGraphEditing, Error, TEXT("Relayout: Asset is not a Material or MaterialFunction: %s"), *AssetPath);
+		return FString();
 	}
 
-	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
-	Root->SetBoolField(TEXT("success"), true);
-
-	FString OutputString;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
-	FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
-	return OutputString;
+	return FString();
 }
 
-FString UMaterialGraphLibrary::ListScopes(const FString& AssetPath)
+FString UMaterialGraphEditingLibrary::ListScopes(const FString& AssetPath)
 {
 	UObject* Asset = LoadMaterialAsset(AssetPath);
 	if (!Asset)
 	{
-		return MakeErrorJson(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+		UE_LOG(LogMaterialGraphEditing, Error, TEXT("ListScopes: Asset not found: %s"), *AssetPath);
+		return FString();
 	}
 
 	TArray<FString> Scopes;
@@ -126,12 +116,11 @@ FString UMaterialGraphLibrary::ListScopes(const FString& AssetPath)
 	}
 	else
 	{
-		return MakeErrorJson(FString::Printf(TEXT("Asset is not a Material or MaterialFunction: %s"), *AssetPath));
+		UE_LOG(LogMaterialGraphEditing, Error, TEXT("ListScopes: Asset is not a Material or MaterialFunction: %s"), *AssetPath);
+		return FString();
 	}
 
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
-	Root->SetBoolField(TEXT("success"), true);
-
 	TArray<TSharedPtr<FJsonValue>> ScopeValues;
 	for (const FString& Scope : Scopes)
 	{

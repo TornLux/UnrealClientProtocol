@@ -1,6 +1,6 @@
 // MIT License - Copyright (c) 2025 Italink
 
-#include "MaterialExpressionClassCache.h"
+#include "Material/MaterialExpressionClassCache.h"
 #include "Materials/MaterialExpression.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/Class.h"

@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "MaterialGraphSerializer.h"
+#include "Material/MaterialGraphSerializer.h"
 
 class UMaterial;
 class UMaterialFunction;
@@ -11,13 +11,11 @@ class UMaterialExpression;
 
 struct FMGDiffResult
 {
-	bool bSuccess = false;
 	TArray<FString> NodesAdded;
 	TArray<FString> NodesRemoved;
 	TArray<FString> NodesModified;
 	TArray<FString> LinksAdded;
 	TArray<FString> LinksRemoved;
-	bool bRelayout = false;
 };
 
 class FMaterialGraphDiffer

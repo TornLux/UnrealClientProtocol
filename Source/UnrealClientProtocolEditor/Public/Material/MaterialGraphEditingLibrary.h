@@ -4,23 +4,23 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "UCPMaterialGraphLibrary.generated.h"
+#include "MaterialGraphEditingLibrary.generated.h"
 
 UCLASS()
-class UMaterialGraphLibrary : public UBlueprintFunctionLibrary
+class UMaterialGraphEditingLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
-	UFUNCTION(BlueprintCallable, Category = "UCP|MaterialGraph")
+	UFUNCTION(BlueprintCallable, Category = "UCP|Material")
 	static FString ReadGraph(const FString& AssetPath, const FString& ScopeName);
 
-	UFUNCTION(BlueprintCallable, Category = "UCP|MaterialGraph")
+	UFUNCTION(BlueprintCallable, Category = "UCP|Material")
 	static FString WriteGraph(const FString& AssetPath, const FString& ScopeName, const FString& GraphText);
 
-	UFUNCTION(BlueprintCallable, Category = "UCP|MaterialGraph")
+	UFUNCTION(BlueprintCallable, Category = "UCP|Material")
 	static FString Relayout(const FString& AssetPath);
 
-	UFUNCTION(BlueprintCallable, Category = "UCP|MaterialGraph")
+	UFUNCTION(BlueprintCallable, Category = "UCP|Material")
 	static FString ListScopes(const FString& AssetPath);
 };
