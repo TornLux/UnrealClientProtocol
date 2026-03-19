@@ -20,14 +20,22 @@ public class UnrealClientProtocolEditor : ModuleRules
 			"Engine",
 		});
 
+		PrivateIncludePaths.AddRange(new string[]
+		{
+			ModuleDirectory + "/Private",
+		});
+
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"UnrealClientProtocol",
 			"UnrealEd",
 			"MaterialEditor",
+			"BlueprintGraph",
+			"KismetCompiler",
 			"Json",
 			"JsonUtilities",
 			"AssetRegistry",
+			"AssetTools",
 		});
 	}
 }

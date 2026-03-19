@@ -3,12 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "NodeCode/NodeCodeClassCache.h"
 
-class FMaterialExpressionClassCache
+class FNodeCodeClassCache
 {
 public:
-	static FMaterialExpressionClassCache& Get();
+	FNodeCodeClassCache(UClass* InBaseClass);
 
 	void Build();
 
@@ -17,6 +16,8 @@ public:
 	FString GetSerializableName(UClass* InClass) const;
 
 private:
-	FNodeCodeClassCache Cache;
-	FMaterialExpressionClassCache();
+	UClass* BaseClass;
+	TMap<FName, UClass*> NameToClass;
+	TSet<FName> AmbiguousNames;
+	bool bBuilt = false;
 };

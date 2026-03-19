@@ -3,41 +3,28 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Material/MaterialGraphSerializer.h"
+#include "NodeCode/NodeCodeTypes.h"
 
 class UMaterial;
 class UMaterialFunction;
 class UMaterialExpression;
 
-struct FMGDiffResult
-{
-	TArray<FString> NodesAdded;
-	TArray<FString> NodesRemoved;
-	TArray<FString> NodesModified;
-	TArray<FString> LinksAdded;
-	TArray<FString> LinksRemoved;
-};
-
 class FMaterialGraphDiffer
 {
 public:
-	static FMGDiffResult Apply(UMaterial* Material, const FString& ScopeName, const FString& GraphText);
-	static FMGDiffResult Apply(UMaterialFunction* MaterialFunction, const FString& ScopeName, const FString& GraphText);
-
-	static FString DiffResultToJson(const FMGDiffResult& Result);
+	static FNodeCodeDiffResult Apply(UMaterial* Material, const FString& ScopeName, const FString& GraphText);
+	static FNodeCodeDiffResult Apply(UMaterialFunction* MaterialFunction, const FString& ScopeName, const FString& GraphText);
 
 private:
-	static FMGGraphIR ParseText(const FString& GraphText);
-
-	static FMGDiffResult DiffAndApply(
+	static FNodeCodeDiffResult DiffAndApply(
 		UMaterial* Material,
 		UMaterialFunction* MaterialFunction,
 		const FString& ScopeName,
-		const FMGGraphIR& NewIR);
+		const FNodeCodeGraphIR& NewIR);
 
 	static void MatchNodes(
-		const FMGGraphIR& OldIR,
-		const FMGGraphIR& NewIR,
+		const FNodeCodeGraphIR& OldIR,
+		const FNodeCodeGraphIR& NewIR,
 		TMap<int32, int32>& OutNewToOld);
 
 	static void ApplyPropertyChanges(

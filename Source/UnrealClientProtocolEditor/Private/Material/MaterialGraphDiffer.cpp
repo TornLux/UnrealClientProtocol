@@ -3,6 +3,7 @@
 #include "Material/MaterialGraphDiffer.h"
 #include "Material/MaterialExpressionClassCache.h"
 #include "Material/MaterialGraphSerializer.h"
+#include "NodeCode/NodeCodeTextFormat.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
@@ -15,9 +16,6 @@
 #include "Materials/MaterialAttributeDefinitionMap.h"
 #include "MaterialEditingLibrary.h"
 #include "UObject/UnrealType.h"
-#include "Dom/JsonObject.h"
-#include "Serialization/JsonWriter.h"
-#include "Serialization/JsonSerializer.h"
 #include "ScopedTransaction.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
@@ -27,271 +25,53 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogUCP, Log, All);
 
-// ---- Text Parser ----
-
-static FString TrimLine(const FString& Line)
+struct FMatLink
 {
-	FString Result = Line;
-	Result.TrimStartAndEndInline();
-	return Result;
-}
+	UMaterialExpression* FromExpr = nullptr;
+	int32 OutputIndex = 0;
+	FExpressionInput* ToInput = nullptr;
 
-static bool ParseNodeLine(const FString& Line, int32& OutIndex, FString& OutClassName, TMap<FString, FString>& OutProps, FGuid& OutGuid)
-{
-	// Format: N<index> <ClassName> {Key:Value, ...} #<guid>
-	// or:     N<index> <ClassName> #<guid>
-	// or:     N<index> <ClassName> {Key:Value, ...}
-	// or:     N<index> <ClassName>
-
-	FString Working = Line;
-
-	// Parse guid from end
-	OutGuid.Invalidate();
-	int32 HashPos;
-	if (Working.FindLastChar('#', HashPos))
+	bool operator==(const FMatLink& Other) const
 	{
-		FString GuidStr = Working.Mid(HashPos + 1).TrimStartAndEnd();
-		if (GuidStr.Len() >= 32)
-		{
-			FGuid::Parse(GuidStr, OutGuid);
-		}
-		Working = Working.Left(HashPos).TrimEnd();
+		return FromExpr == Other.FromExpr && OutputIndex == Other.OutputIndex && ToInput == Other.ToInput;
 	}
-
-	// Parse properties block
-	int32 BraceOpen, BraceClose;
-	if (Working.FindChar('{', BraceOpen) && Working.FindLastChar('}', BraceClose) && BraceClose > BraceOpen)
+	friend uint32 GetTypeHash(const FMatLink& L)
 	{
-		FString PropsStr = Working.Mid(BraceOpen + 1, BraceClose - BraceOpen - 1);
-		Working = Working.Left(BraceOpen).TrimEnd();
-
-		// Parse key:value pairs (handle nested quotes and parentheses)
-		int32 Depth = 0;
-		bool bInQuote = false;
-		int32 Start = 0;
-
-		auto ParsePair = [&](const FString& PairStr)
-		{
-			int32 ColonPos;
-			if (PairStr.FindChar(':', ColonPos))
-			{
-				FString Key = PairStr.Left(ColonPos).TrimStartAndEnd();
-				FString Value = PairStr.Mid(ColonPos + 1).TrimStartAndEnd();
-				if (!Key.IsEmpty())
-				{
-					OutProps.Add(Key, Value);
-				}
-			}
-		};
-
-		for (int32 i = 0; i < PropsStr.Len(); ++i)
-		{
-			TCHAR Ch = PropsStr[i];
-			if (Ch == '"')
-			{
-				bInQuote = !bInQuote;
-			}
-			else if (!bInQuote)
-			{
-				if (Ch == '(' || Ch == '[')
-				{
-					Depth++;
-				}
-				else if (Ch == ')' || Ch == ']')
-				{
-					Depth--;
-				}
-				else if (Ch == ',' && Depth == 0)
-				{
-					ParsePair(PropsStr.Mid(Start, i - Start));
-					Start = i + 1;
-				}
-			}
-		}
-		if (Start < PropsStr.Len())
-		{
-			ParsePair(PropsStr.Mid(Start));
-		}
+		return HashCombine(HashCombine(::GetTypeHash(L.FromExpr), ::GetTypeHash(L.OutputIndex)), ::GetTypeHash(L.ToInput));
 	}
-
-	// Parse N<index> <ClassName>
-	int32 SpacePos;
-	if (!Working.FindChar(' ', SpacePos))
-	{
-		return false;
-	}
-
-	FString IndexStr = Working.Left(SpacePos);
-	if (!IndexStr.StartsWith(TEXT("N")))
-	{
-		return false;
-	}
-
-	OutIndex = FCString::Atoi(*IndexStr.Mid(1));
-	OutClassName = Working.Mid(SpacePos + 1).TrimStartAndEnd();
-
-	return !OutClassName.IsEmpty();
-}
-
-static bool ParseLinkLine(const FString& Line, int32& OutFromNode, FString& OutFromOutput,
-	int32& OutToNode, FString& OutToInput, bool& bOutToMaterialOutput)
-{
-	// Format: N<from>[.OutputName] -> N<to>.InputName
-	//     or: N<from>[.OutputName] -> [MaterialOutputName]
-
-	int32 ArrowPos = Line.Find(TEXT("->"));
-	if (ArrowPos == INDEX_NONE)
-	{
-		return false;
-	}
-
-	FString FromStr = Line.Left(ArrowPos).TrimEnd();
-	FString ToStr = Line.Mid(ArrowPos + 2).TrimStart();
-
-	// Parse From
-	int32 DotPos;
-	if (FromStr.FindChar('.', DotPos))
-	{
-		FString NodeStr = FromStr.Left(DotPos);
-		if (!NodeStr.StartsWith(TEXT("N")))
-		{
-			return false;
-		}
-		OutFromNode = FCString::Atoi(*NodeStr.Mid(1));
-		OutFromOutput = FromStr.Mid(DotPos + 1);
-	}
-	else
-	{
-		if (!FromStr.StartsWith(TEXT("N")))
-		{
-			return false;
-		}
-		OutFromNode = FCString::Atoi(*FromStr.Mid(1));
-		OutFromOutput = FString();
-	}
-
-	// Parse To
-	if (ToStr.StartsWith(TEXT("[")) && ToStr.EndsWith(TEXT("]")))
-	{
-		bOutToMaterialOutput = true;
-		OutToInput = ToStr.Mid(1, ToStr.Len() - 2);
-		OutToNode = -1;
-	}
-	else
-	{
-		bOutToMaterialOutput = false;
-		if (ToStr.FindChar('.', DotPos))
-		{
-			FString NodeStr = ToStr.Left(DotPos);
-			if (!NodeStr.StartsWith(TEXT("N")))
-			{
-				return false;
-			}
-			OutToNode = FCString::Atoi(*NodeStr.Mid(1));
-			OutToInput = ToStr.Mid(DotPos + 1);
-		}
-		else
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
-FMGGraphIR FMaterialGraphDiffer::ParseText(const FString& GraphText)
-{
-	FMGGraphIR IR;
-
-	TArray<FString> Lines;
-	GraphText.ParseIntoArrayLines(Lines);
-
-	enum class ESection { None, Nodes, Links };
-	ESection CurrentSection = ESection::None;
-
-	for (const FString& RawLine : Lines)
-	{
-		FString Line = TrimLine(RawLine);
-		if (Line.IsEmpty() || Line.StartsWith(TEXT("#")))
-		{
-			continue;
-		}
-
-		if (Line.StartsWith(TEXT("=== scope:")))
-		{
-			int32 ColonPos = Line.Find(TEXT(":"));
-			int32 EndPos = Line.Find(TEXT("==="), ESearchCase::IgnoreCase, ESearchDir::FromStart, ColonPos + 1);
-			if (ColonPos != INDEX_NONE && EndPos != INDEX_NONE)
-			{
-				IR.ScopeName = Line.Mid(ColonPos + 1, EndPos - ColonPos - 1).TrimStartAndEnd();
-			}
-			continue;
-		}
-
-		if (Line == TEXT("=== nodes ==="))
-		{
-			CurrentSection = ESection::Nodes;
-			continue;
-		}
-		if (Line == TEXT("=== links ==="))
-		{
-			CurrentSection = ESection::Links;
-			continue;
-		}
-
-		if (CurrentSection == ESection::Nodes)
-		{
-			FMGNodeIR Node;
-			if (ParseNodeLine(Line, Node.Index, Node.ClassName, Node.Properties, Node.Guid))
-			{
-				IR.Nodes.Add(MoveTemp(Node));
-			}
-		}
-		else if (CurrentSection == ESection::Links)
-		{
-			FMGLinkIR Link;
-			if (ParseLinkLine(Line, Link.FromNodeIndex, Link.FromOutputName,
-				Link.ToNodeIndex, Link.ToInputName, Link.bToMaterialOutput))
-			{
-				IR.Links.Add(MoveTemp(Link));
-			}
-		}
-	}
-
-	return IR;
-}
+};
 
 // ---- Diff & Apply ----
 
-FMGDiffResult FMaterialGraphDiffer::Apply(UMaterial* Material, const FString& ScopeName, const FString& GraphText)
+FNodeCodeDiffResult FMaterialGraphDiffer::Apply(UMaterial* Material, const FString& ScopeName, const FString& GraphText)
 {
 	if (!Material)
 	{
-		FMGDiffResult R;
+		FNodeCodeDiffResult R;
 		UE_LOG(LogUCP, Error, TEXT("WriteGraph: Material is null"));
 		return R;
 	}
 
-	FMGGraphIR NewIR = ParseText(GraphText);
+	FNodeCodeGraphIR NewIR = FNodeCodeTextFormat::ParseText(GraphText);
 	return DiffAndApply(Material, nullptr, ScopeName, NewIR);
 }
 
-FMGDiffResult FMaterialGraphDiffer::Apply(UMaterialFunction* MaterialFunction, const FString& ScopeName, const FString& GraphText)
+FNodeCodeDiffResult FMaterialGraphDiffer::Apply(UMaterialFunction* MaterialFunction, const FString& ScopeName, const FString& GraphText)
 {
 	if (!MaterialFunction)
 	{
-		FMGDiffResult R;
+		FNodeCodeDiffResult R;
 		UE_LOG(LogUCP, Error, TEXT("WriteGraph: MaterialFunction is null"));
 		return R;
 	}
 
-	FMGGraphIR NewIR = ParseText(GraphText);
+	FNodeCodeGraphIR NewIR = FNodeCodeTextFormat::ParseText(GraphText);
 	return DiffAndApply(nullptr, MaterialFunction, ScopeName, NewIR);
 }
 
 void FMaterialGraphDiffer::MatchNodes(
-	const FMGGraphIR& OldIR,
-	const FMGGraphIR& NewIR,
+	const FNodeCodeGraphIR& OldIR,
+	const FNodeCodeGraphIR& NewIR,
 	TMap<int32, int32>& OutNewToOld)
 {
 	TMap<FGuid, int32> OldGuidMap;
@@ -305,7 +85,7 @@ void FMaterialGraphDiffer::MatchNodes(
 
 	TSet<int32> MatchedOld;
 
-	auto GetKeyProp = [](const FMGNodeIR& N) -> FString
+	auto GetKeyProp = [](const FNodeCodeNodeIR& N) -> FString
 	{
 		if (const FString* Val = N.Properties.Find(TEXT("ParameterName")))
 		{
@@ -325,7 +105,7 @@ void FMaterialGraphDiffer::MatchNodes(
 	// Pass 1: Match by Guid
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
-		const FMGNodeIR& NewNode = NewIR.Nodes[NewIdx];
+		const FNodeCodeNodeIR& NewNode = NewIR.Nodes[NewIdx];
 		if (NewNode.Guid.IsValid())
 		{
 			if (int32* OldIdx = OldGuidMap.Find(NewNode.Guid))
@@ -339,7 +119,7 @@ void FMaterialGraphDiffer::MatchNodes(
 		}
 	}
 
-	// Pass 2: Match by ClassName + KeyProp (ParameterName / Texture / MaterialFunction)
+	// Pass 2: Match by ClassName + KeyProp
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
 		if (OutNewToOld.Contains(NewIdx))
@@ -347,7 +127,7 @@ void FMaterialGraphDiffer::MatchNodes(
 			continue;
 		}
 
-		const FMGNodeIR& NewNode = NewIR.Nodes[NewIdx];
+		const FNodeCodeNodeIR& NewNode = NewIR.Nodes[NewIdx];
 		FString NewKey = GetKeyProp(NewNode);
 		if (NewKey.IsEmpty())
 		{
@@ -361,7 +141,7 @@ void FMaterialGraphDiffer::MatchNodes(
 				continue;
 			}
 
-			const FMGNodeIR& OldNode = OldIR.Nodes[OldIdx];
+			const FNodeCodeNodeIR& OldNode = OldIR.Nodes[OldIdx];
 			if (OldNode.ClassName == NewNode.ClassName && GetKeyProp(OldNode) == NewKey)
 			{
 				OutNewToOld.Add(NewIdx, OldIdx);
@@ -371,7 +151,7 @@ void FMaterialGraphDiffer::MatchNodes(
 		}
 	}
 
-	// Pass 3: Match remaining unmatched nodes by ClassName alone (reuse orphaned nodes)
+	// Pass 3: Match remaining by ClassName alone
 	TMultiMap<FString, int32> UnmatchedOldByClass;
 	for (int32 OldIdx = 0; OldIdx < OldIR.Nodes.Num(); ++OldIdx)
 	{
@@ -594,17 +374,17 @@ EMaterialProperty FMaterialGraphDiffer::FindMaterialPropertyByName(UMaterial* Ma
 	return MP_MAX;
 }
 
-FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
+FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 	UMaterial* Material,
 	UMaterialFunction* MaterialFunction,
 	const FString& ScopeName,
-	const FMGGraphIR& NewIR)
+	const FNodeCodeGraphIR& NewIR)
 {
-	FMGDiffResult Result;
+	FNodeCodeDiffResult Result;
 
 	FMaterialExpressionClassCache::Get().Build();
 
-	FMGGraphIR OldIR;
+	FNodeCodeGraphIR OldIR;
 	if (Material)
 	{
 		OldIR = FMaterialGraphSerializer::BuildIR(Material, ScopeName);
@@ -633,16 +413,17 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 			continue;
 		}
 
-		const FMGNodeIR& OldNode = OldIR.Nodes[OldIdx];
-		if (OldNode.Expression)
+		const FNodeCodeNodeIR& OldNode = OldIR.Nodes[OldIdx];
+		UMaterialExpression* OldExpr = Cast<UMaterialExpression>(OldNode.SourceObject);
+		if (OldExpr)
 		{
 			if (Material)
 			{
-				UMaterialEditingLibrary::DeleteMaterialExpression(Material, OldNode.Expression);
+				UMaterialEditingLibrary::DeleteMaterialExpression(Material, OldExpr);
 			}
 			else if (MaterialFunction)
 			{
-				UMaterialEditingLibrary::DeleteMaterialExpressionInFunction(MaterialFunction, OldNode.Expression);
+				UMaterialEditingLibrary::DeleteMaterialExpressionInFunction(MaterialFunction, OldExpr);
 			}
 			Result.NodesRemoved.Add(FString::Printf(TEXT("N%d %s"), OldNode.Index, *OldNode.ClassName));
 		}
@@ -653,11 +434,11 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
-		const FMGNodeIR& NewNode = NewIR.Nodes[NewIdx];
+		const FNodeCodeNodeIR& NewNode = NewIR.Nodes[NewIdx];
 
 		if (int32* OldIdx = NewToOld.Find(NewIdx))
 		{
-			NewIndexToExpr.Add(NewNode.Index, OldIR.Nodes[*OldIdx].Expression);
+			NewIndexToExpr.Add(NewNode.Index, Cast<UMaterialExpression>(OldIR.Nodes[*OldIdx].SourceObject));
 		}
 		else
 		{
@@ -701,9 +482,9 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 			continue;
 		}
 
-		const FMGNodeIR& NewNode = NewIR.Nodes[NewIdx];
-		const FMGNodeIR& OldNode = OldIR.Nodes[*OldIdx];
-		UMaterialExpression* Expr = OldNode.Expression;
+		const FNodeCodeNodeIR& NewNode = NewIR.Nodes[NewIdx];
+		const FNodeCodeNodeIR& OldNode = OldIR.Nodes[*OldIdx];
+		UMaterialExpression* Expr = Cast<UMaterialExpression>(OldNode.SourceObject);
 
 		if (!Expr)
 		{
@@ -742,40 +523,8 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	// Phase 4: Clear all existing connections on nodes in scope, then rebuild
-	for (auto& Pair : NewIndexToExpr)
-	{
-		UMaterialExpression* Expr = Pair.Value;
-		if (!Expr)
-		{
-			continue;
-		}
-
-		for (FExpressionInputIterator It(Expr); It; ++It)
-		{
-			if (It->Expression)
-			{
-				Result.LinksRemoved.Add(FString::Printf(TEXT("(cleared input on N%d)"), Pair.Key));
-				It->Expression = nullptr;
-			}
-		}
-	}
-
-	if (Material)
-	{
-		for (int32 i = 0; i < MP_MAX; ++i)
-		{
-			EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
-			FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
-			if (Input && Input->Expression && NewIndexToExpr.FindKey(Input->Expression))
-			{
-				Input->Expression = nullptr;
-			}
-		}
-	}
-
-	// Phase 5: Rebuild connections from NewIR using low-level ConnectExpression API
-	// This avoids GetShortenPinName mapping issues in ConnectMaterialExpressions
+	// Phase 4+5: Incremental connection diff
+	// Helper lambdas for pin resolution
 	auto FindInputIndexByName = [](UMaterialExpression* Expr, const FString& InputName) -> int32
 	{
 		if (InputName.IsEmpty())
@@ -783,7 +532,6 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 			return (Expr->GetInput(0) != nullptr) ? 0 : INDEX_NONE;
 		}
 
-		// Primary: match by GetInputName (display name, what ReadGraph serializes)
 		for (int32 i = 0; ; ++i)
 		{
 			FExpressionInput* Input = Expr->GetInput(i);
@@ -797,7 +545,6 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 			}
 		}
 
-		// Fallback: match by UPROPERTY field name (stable, not affected by GetInputName overrides)
 		UClass* ExprClass = Expr->GetClass();
 		for (TFieldIterator<FStructProperty> PropIt(ExprClass); PropIt; ++PropIt)
 		{
@@ -867,7 +614,11 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 		return INDEX_NONE;
 	};
 
-	for (const FMGLinkIR& Link : NewIR.Links)
+	// Build desired link set from NewIR
+	TSet<FMatLink> DesiredLinks;
+	TArray<FMatLink> LinksToCreate;
+
+	for (const FNodeCodeLinkIR& Link : NewIR.Links)
 	{
 		UMaterialExpression** FromExprPtr = NewIndexToExpr.Find(Link.FromNodeIndex);
 		if (!FromExprPtr || !*FromExprPtr)
@@ -883,27 +634,21 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 			continue;
 		}
 
-		if (Link.bToMaterialOutput && Material)
+		FExpressionInput* TargetInput = nullptr;
+
+		if (Link.bToGraphOutput && Material)
 		{
 			EMaterialProperty MatProp = FindMaterialPropertyByName(Material, Link.ToInputName);
 			if (MatProp != MP_MAX)
 			{
-				FExpressionInput* MatInput = Material->GetExpressionInputForProperty(MatProp);
-				if (MatInput)
-				{
-					(*FromExprPtr)->ConnectExpression(MatInput, FromOutputIndex);
-				}
-				Result.LinksAdded.Add(FString::Printf(TEXT("N%d%s -> [%s]"),
-					Link.FromNodeIndex,
-					Link.FromOutputName.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(".%s"), *Link.FromOutputName),
-					*Link.ToInputName));
+				TargetInput = Material->GetExpressionInputForProperty(MatProp);
 			}
 			else
 			{
 				UE_LOG(LogUCP, Warning, TEXT("WriteGraph: Unknown material output: %s"), *Link.ToInputName);
 			}
 		}
-		else if (!Link.bToMaterialOutput)
+		else if (!Link.bToGraphOutput)
 		{
 			UMaterialExpression** ToExprPtr = NewIndexToExpr.Find(Link.ToNodeIndex);
 			if (!ToExprPtr || !*ToExprPtr)
@@ -928,33 +673,108 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 				continue;
 			}
 
-			FExpressionInput* ToInput = (*ToExprPtr)->GetInput(ToInputIndex);
-			if (ToInput)
+			TargetInput = (*ToExprPtr)->GetInput(ToInputIndex);
+		}
+
+		if (!TargetInput)
+		{
+			continue;
+		}
+
+		FMatLink Desired;
+		Desired.FromExpr = *FromExprPtr;
+		Desired.OutputIndex = FromOutputIndex;
+		Desired.ToInput = TargetInput;
+		DesiredLinks.Add(Desired);
+
+		bool bAlreadyConnected = (TargetInput->Expression == *FromExprPtr && TargetInput->OutputIndex == FromOutputIndex);
+		if (!bAlreadyConnected)
+		{
+			LinksToCreate.Add(Desired);
+		}
+	}
+
+	// Collect all live input slots on in-scope nodes + material outputs pointing to in-scope nodes
+	// Remove connections that are not in the desired set
+	TSet<UMaterialExpression*> ScopeExprSet;
+	for (auto& Pair : NewIndexToExpr)
+	{
+		if (Pair.Value)
+		{
+			ScopeExprSet.Add(Pair.Value);
+		}
+	}
+
+	for (auto& Pair : NewIndexToExpr)
+	{
+		UMaterialExpression* Expr = Pair.Value;
+		if (!Expr)
+		{
+			continue;
+		}
+
+		for (FExpressionInputIterator It(Expr); It; ++It)
+		{
+			if (!It->Expression || !ScopeExprSet.Contains(It->Expression))
 			{
-				(*FromExprPtr)->ConnectExpression(ToInput, FromOutputIndex);
-				Result.LinksAdded.Add(FString::Printf(TEXT("N%d%s -> N%d.%s"),
-					Link.FromNodeIndex,
-					Link.FromOutputName.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(".%s"), *Link.FromOutputName),
-					Link.ToNodeIndex,
-					*Link.ToInputName));
+				continue;
 			}
-			else
+
+			FMatLink Live;
+			Live.FromExpr = It->Expression;
+			Live.OutputIndex = It->OutputIndex;
+			Live.ToInput = It.Input;
+
+			if (!DesiredLinks.Contains(Live))
 			{
-				UE_LOG(LogUCP, Warning, TEXT("WriteGraph: Failed to get input %d on N%d"), ToInputIndex, Link.ToNodeIndex);
+				Result.LinksRemoved.Add(FString::Printf(TEXT("N?->N%d.%s"), Pair.Key, *Expr->GetInputName(It.Index).ToString()));
+				It->Expression = nullptr;
 			}
 		}
+	}
+
+	if (Material)
+	{
+		for (int32 i = 0; i < MP_MAX; ++i)
+		{
+			EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
+			FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
+			if (!Input || !Input->Expression || !ScopeExprSet.Contains(Input->Expression))
+			{
+				continue;
+			}
+
+			FMatLink Live;
+			Live.FromExpr = Input->Expression;
+			Live.OutputIndex = Input->OutputIndex;
+			Live.ToInput = Input;
+
+			if (!DesiredLinks.Contains(Live))
+			{
+				const FString& AttrName = FMaterialAttributeDefinitionMap::GetAttributeName(Prop);
+				Result.LinksRemoved.Add(FString::Printf(TEXT("N?->[%s]"), *AttrName));
+				Input->Expression = nullptr;
+			}
+		}
+	}
+
+	// Create new links
+	for (const FMatLink& Link : LinksToCreate)
+	{
+		Link.FromExpr->ConnectExpression(Link.ToInput, Link.OutputIndex);
+		Result.LinksAdded.Add(FString::Printf(TEXT("%s[%d] -> input"),
+			*FMaterialExpressionClassCache::Get().GetSerializableName(Link.FromExpr->GetClass()),
+			Link.OutputIndex));
 	}
 
 	// Phase 6: Clean orphaned nodes, relayout, recompile and refresh editor UI
 	if (Material)
 	{
-		// RebuildGraph first so GetUnusedExpressions can analyze connectivity
 		if (Material->MaterialGraph)
 		{
 			Material->MaterialGraph->RebuildGraph();
 		}
 
-		// Remove orphaned (unreachable) expressions
 		if (Material->MaterialGraph)
 		{
 			TArray<UEdGraphNode*> UnusedNodes;
@@ -979,7 +799,13 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 			}
 		}
 
-		UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
+		bool bGraphChanged = Result.NodesAdded.Num() > 0 || Result.NodesRemoved.Num() > 0
+			|| Result.LinksAdded.Num() > 0 || Result.LinksRemoved.Num() > 0;
+
+		if (bGraphChanged)
+		{
+			UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
+		}
 		UMaterialEditingLibrary::RecompileMaterial(Material);
 
 		if (GEditor)
@@ -1070,33 +896,4 @@ FMGDiffResult FMaterialGraphDiffer::DiffAndApply(
 	}
 
 	return Result;
-}
-
-FString FMaterialGraphDiffer::DiffResultToJson(const FMGDiffResult& Result)
-{
-	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
-
-	TSharedPtr<FJsonObject> Diff = MakeShared<FJsonObject>();
-
-	auto ToJsonArray = [](const TArray<FString>& Arr) -> TArray<TSharedPtr<FJsonValue>>
-	{
-		TArray<TSharedPtr<FJsonValue>> Values;
-		for (const FString& S : Arr)
-		{
-			Values.Add(MakeShared<FJsonValueString>(S));
-		}
-		return Values;
-	};
-
-	Diff->SetArrayField(TEXT("nodes_added"), ToJsonArray(Result.NodesAdded));
-	Diff->SetArrayField(TEXT("nodes_removed"), ToJsonArray(Result.NodesRemoved));
-	Diff->SetArrayField(TEXT("nodes_modified"), ToJsonArray(Result.NodesModified));
-	Diff->SetArrayField(TEXT("links_added"), ToJsonArray(Result.LinksAdded));
-	Diff->SetArrayField(TEXT("links_removed"), ToJsonArray(Result.LinksRemoved));
-	Root->SetObjectField(TEXT("diff"), Diff);
-
-	FString OutputString;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
-	FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
-	return OutputString;
 }

@@ -2,6 +2,8 @@
 
 #include "Material/MaterialGraphSerializer.h"
 #include "Material/MaterialExpressionClassCache.h"
+#include "NodeCode/NodeCodeTextFormat.h"
+#include "NodeCode/NodeCodePropertyUtils.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
@@ -34,69 +36,21 @@ static UMaterialExpression* TraceReroute(FExpressionInput* Input, int32& OutOutp
 	return Input->Expression;
 }
 
-static FString FormatPropertyValue(FProperty* Prop, const void* ValuePtr, UObject* Owner)
-{
-	if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Prop))
-	{
-		UObject* Obj = ObjProp->GetObjectPropertyValue(ValuePtr);
-		if (!Obj)
-		{
-			return TEXT("None");
-		}
-		if (Obj->IsAsset())
-		{
-			return FString::Printf(TEXT("\"%s\""), *Obj->GetPathName());
-		}
-		FString ExportStr;
-		Prop->ExportTextItem_Direct(ExportStr, ValuePtr, nullptr, Owner, PPF_None, nullptr);
-		return ExportStr;
-	}
-
-	if (FStructProperty* StructProp = CastField<FStructProperty>(Prop))
-	{
-		FString ExportStr;
-		Prop->ExportTextItem_Direct(ExportStr, ValuePtr, nullptr, Owner, PPF_None, nullptr);
-		return ExportStr;
-	}
-
-	if (CastField<FStrProperty>(Prop))
-	{
-		const FString& Str = *static_cast<const FString*>(ValuePtr);
-		return FString::Printf(TEXT("\"%s\""), *Str.ReplaceCharWithEscapedChar());
-	}
-
-	if (CastField<FNameProperty>(Prop))
-	{
-		const FName& Name = *static_cast<const FName*>(ValuePtr);
-		return FString::Printf(TEXT("\"%s\""), *Name.ToString());
-	}
-
-	if (CastField<FTextProperty>(Prop))
-	{
-		const FText& Text = *static_cast<const FText*>(ValuePtr);
-		return FString::Printf(TEXT("\"%s\""), *Text.ToString());
-	}
-
-	FString ExportStr;
-	Prop->ExportTextItem_Direct(ExportStr, ValuePtr, nullptr, Owner, PPF_None, nullptr);
-	return ExportStr;
-}
-
 // -------------------------------------------------------------------
 
 FString FMaterialGraphSerializer::Serialize(UMaterial* Material, const FString& ScopeName)
 {
-	FMGGraphIR IR = BuildIR(Material, ScopeName);
-	return IRToText(IR);
+	FNodeCodeGraphIR IR = BuildIR(Material, ScopeName);
+	return FNodeCodeTextFormat::IRToText(IR);
 }
 
 FString FMaterialGraphSerializer::Serialize(UMaterialFunction* MaterialFunction, const FString& ScopeName)
 {
-	FMGGraphIR IR = BuildIR(MaterialFunction, ScopeName);
-	return IRToText(IR);
+	FNodeCodeGraphIR IR = BuildIR(MaterialFunction, ScopeName);
+	return FNodeCodeTextFormat::IRToText(IR);
 }
 
-FMGGraphIR FMaterialGraphSerializer::BuildIR(UMaterial* Material, const FString& ScopeName)
+FNodeCodeGraphIR FMaterialGraphSerializer::BuildIR(UMaterial* Material, const FString& ScopeName)
 {
 	if (!Material)
 	{
@@ -107,7 +61,7 @@ FMGGraphIR FMaterialGraphSerializer::BuildIR(UMaterial* Material, const FString&
 	return BuildIRFromExpressions(Expressions, Material, nullptr, ScopeName);
 }
 
-FMGGraphIR FMaterialGraphSerializer::BuildIR(UMaterialFunction* MaterialFunction, const FString& ScopeName)
+FNodeCodeGraphIR FMaterialGraphSerializer::BuildIR(UMaterialFunction* MaterialFunction, const FString& ScopeName)
 {
 	if (!MaterialFunction)
 	{
@@ -118,7 +72,7 @@ FMGGraphIR FMaterialGraphSerializer::BuildIR(UMaterialFunction* MaterialFunction
 	return BuildIRFromExpressions(Expressions, nullptr, MaterialFunction, ScopeName);
 }
 
-FMGGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
+FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 	TConstArrayView<TObjectPtr<UMaterialExpression>> AllExpressions,
 	UMaterial* Material,
 	UMaterialFunction* MaterialFunction,
@@ -126,7 +80,7 @@ FMGGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 {
 	FMaterialExpressionClassCache::Get().Build();
 
-	FMGGraphIR IR;
+	FNodeCodeGraphIR IR;
 	IR.ScopeName = ScopeName;
 
 	TSet<UMaterialExpression*> ReachableSet;
@@ -243,9 +197,9 @@ FMGGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 			continue;
 		}
 
-		FMGNodeIR Node;
+		FNodeCodeNodeIR Node;
 		Node.Index = NodeCounter;
-		Node.Expression = Expr.Get();
+		Node.SourceObject = Expr.Get();
 		Node.Guid = Expr->MaterialExpressionGuid;
 		Node.ClassName = FMaterialExpressionClassCache::Get().GetSerializableName(Expr->GetClass());
 
@@ -279,12 +233,12 @@ FMGGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 				return;
 			}
 
-			FMGLinkIR Link;
+			FNodeCodeLinkIR Link;
 			Link.FromNodeIndex = *FromIdx;
 			Link.FromOutputName = GetOutputPinName(RealExpr, OutIdx);
 			Link.ToNodeIndex = -1;
 			Link.ToInputName = PinName;
-			Link.bToMaterialOutput = true;
+			Link.bToGraphOutput = true;
 			IR.Links.Add(MoveTemp(Link));
 		};
 
@@ -346,22 +300,22 @@ FMGGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 					continue;
 				}
 
-				FMGLinkIR Link;
+				FNodeCodeLinkIR Link;
 				Link.FromNodeIndex = *FromIdx;
 				Link.FromOutputName = GetOutputPinName(RealExpr, OutIdx);
 				Link.ToNodeIndex = *ToIdx;
 				Link.ToInputName = ShortenInputPinName(CustomOut->GetInputName(It.Index).ToString());
-				Link.bToMaterialOutput = false;
+				Link.bToGraphOutput = false;
 				IR.Links.Add(MoveTemp(Link));
 			}
 		}
 #endif
 	}
 
-	for (const FMGNodeIR& Node : IR.Nodes)
+	for (const FNodeCodeNodeIR& Node : IR.Nodes)
 	{
-		UMaterialExpression* Expr = Node.Expression;
-		if (Cast<UMaterialExpressionCustomOutput>(Expr))
+		UMaterialExpression* Expr = Cast<UMaterialExpression>(Node.SourceObject);
+		if (!Expr || Cast<UMaterialExpressionCustomOutput>(Expr))
 		{
 			continue;
 		}
@@ -386,12 +340,12 @@ FMGGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 				continue;
 			}
 
-			FMGLinkIR Link;
+			FNodeCodeLinkIR Link;
 			Link.FromNodeIndex = *FromIdx;
 			Link.FromOutputName = GetOutputPinName(RealExpr, OutIdx);
 			Link.ToNodeIndex = Node.Index;
 			Link.ToInputName = ShortenInputPinName(Expr->GetInputName(It.Index).ToString());
-			Link.bToMaterialOutput = false;
+			Link.bToGraphOutput = false;
 			IR.Links.Add(MoveTemp(Link));
 		}
 	}
@@ -510,7 +464,7 @@ void FMaterialGraphSerializer::SerializeNodeProperties(
 	{
 		FProperty* Prop = *PropIt;
 
-		if (ShouldSkipProperty(Prop))
+		if (FNodeCodePropertyUtils::ShouldSkipProperty(Prop))
 		{
 			continue;
 		}
@@ -538,7 +492,7 @@ void FMaterialGraphSerializer::SerializeNodeProperties(
 			continue;
 		}
 
-		FString ValueStr = FormatPropertyValue(Prop, InstanceValue, Expression);
+		FString ValueStr = FNodeCodePropertyUtils::FormatPropertyValue(Prop, InstanceValue, Expression);
 		OutProperties.Add(Prop->GetName(), MoveTemp(ValueStr));
 	}
 }
@@ -627,17 +581,6 @@ bool FMaterialGraphSerializer::IsEmbeddedConnectionArrayProperty(const FProperty
 	return false;
 }
 
-bool FMaterialGraphSerializer::ShouldSkipProperty(const FProperty* Prop)
-{
-	if (Prop->HasAnyPropertyFlags(
-		CPF_Transient | CPF_DuplicateTransient | CPF_SkipSerialization | CPF_Deprecated))
-	{
-		return true;
-	}
-
-	return false;
-}
-
 const TSet<FName>& FMaterialGraphSerializer::GetBaseClassSkipProperties()
 {
 	static TSet<FName> SkipSet;
@@ -664,138 +607,6 @@ const TSet<FName>& FMaterialGraphSerializer::GetBaseClassSkipProperties()
 		SkipSet.Add(TEXT("PreEditAttributeSetTypes"));
 	}
 	return SkipSet;
-}
-
-FString FMaterialGraphSerializer::IRToText(const FMGGraphIR& IR)
-{
-	FString Result;
-
-	if (!IR.ScopeName.IsEmpty())
-	{
-		Result += FString::Printf(TEXT("=== scope: %s ===\n\n"), *IR.ScopeName);
-	}
-
-	// Compute topological depth for each node (max distance from a leaf/source node)
-	TMap<int32, int32> NodeDepth;
-	for (const FMGNodeIR& Node : IR.Nodes)
-	{
-		NodeDepth.Add(Node.Index, 0);
-	}
-
-	TMap<int32, TSet<int32>> Dependents;
-	for (const FMGLinkIR& Link : IR.Links)
-	{
-		if (!Link.bToMaterialOutput)
-		{
-			Dependents.FindOrAdd(Link.FromNodeIndex).Add(Link.ToNodeIndex);
-		}
-	}
-
-	bool bChanged = true;
-	while (bChanged)
-	{
-		bChanged = false;
-		for (const FMGLinkIR& Link : IR.Links)
-		{
-			if (Link.bToMaterialOutput)
-			{
-				continue;
-			}
-
-			int32* FromDepth = NodeDepth.Find(Link.FromNodeIndex);
-			int32* ToDepth = NodeDepth.Find(Link.ToNodeIndex);
-			if (FromDepth && ToDepth)
-			{
-				int32 Expected = *FromDepth + 1;
-				if (*ToDepth < Expected)
-				{
-					*ToDepth = Expected;
-					bChanged = true;
-				}
-			}
-		}
-	}
-
-	// Sort nodes by depth, then by original index within same depth
-	TArray<int32> SortedIndices;
-	SortedIndices.Reserve(IR.Nodes.Num());
-	for (int32 i = 0; i < IR.Nodes.Num(); ++i)
-	{
-		SortedIndices.Add(i);
-	}
-
-	SortedIndices.Sort([&IR, &NodeDepth](int32 A, int32 B)
-	{
-		int32 DepthA = NodeDepth.FindRef(IR.Nodes[A].Index);
-		int32 DepthB = NodeDepth.FindRef(IR.Nodes[B].Index);
-		if (DepthA != DepthB)
-		{
-			return DepthA < DepthB;
-		}
-		return IR.Nodes[A].Index < IR.Nodes[B].Index;
-	});
-
-	Result += TEXT("=== nodes ===\n");
-	int32 LastDepth = -1;
-	for (int32 SortedIdx : SortedIndices)
-	{
-		const FMGNodeIR& Node = IR.Nodes[SortedIdx];
-		int32 Depth = NodeDepth.FindRef(Node.Index);
-		if (LastDepth >= 0 && Depth != LastDepth)
-		{
-			Result += TEXT("\n");
-		}
-		LastDepth = Depth;
-
-		Result += FString::Printf(TEXT("N%d %s"), Node.Index, *Node.ClassName);
-
-		if (Node.Properties.Num() > 0)
-		{
-			Result += TEXT(" {");
-			bool bFirst = true;
-			for (const auto& Pair : Node.Properties)
-			{
-				if (!bFirst)
-				{
-					Result += TEXT(", ");
-				}
-				Result += FString::Printf(TEXT("%s:%s"), *Pair.Key, *Pair.Value);
-				bFirst = false;
-			}
-			Result += TEXT("}");
-		}
-
-		if (Node.Guid.IsValid())
-		{
-			Result += FString::Printf(TEXT(" #%s"), *Node.Guid.ToString(EGuidFormats::DigitsLower));
-		}
-
-		Result += TEXT("\n");
-	}
-
-	Result += TEXT("\n=== links ===\n");
-	for (const FMGLinkIR& Link : IR.Links)
-	{
-		FString FromStr = FString::Printf(TEXT("N%d"), Link.FromNodeIndex);
-		if (!Link.FromOutputName.IsEmpty())
-		{
-			FromStr += FString::Printf(TEXT(".%s"), *Link.FromOutputName);
-		}
-
-		FString ToStr;
-		if (Link.bToMaterialOutput)
-		{
-			ToStr = FString::Printf(TEXT("[%s]"), *Link.ToInputName);
-		}
-		else
-		{
-			ToStr = FString::Printf(TEXT("N%d.%s"), Link.ToNodeIndex, *Link.ToInputName);
-		}
-
-		Result += FString::Printf(TEXT("%s -> %s\n"), *FromStr, *ToStr);
-	}
-
-	return Result;
 }
 
 TArray<FString> FMaterialGraphSerializer::ListScopes(UMaterial* Material)

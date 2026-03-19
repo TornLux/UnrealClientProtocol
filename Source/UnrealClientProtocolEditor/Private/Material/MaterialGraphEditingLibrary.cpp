@@ -3,6 +3,7 @@
 #include "Material/MaterialGraphEditingLibrary.h"
 #include "Material/MaterialGraphSerializer.h"
 #include "Material/MaterialGraphDiffer.h"
+#include "NodeCode/NodeCodeTextFormat.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
@@ -50,7 +51,7 @@ FString UMaterialGraphEditingLibrary::WriteGraph(const FString& AssetPath, const
 		return FString();
 	}
 
-	FMGDiffResult Result;
+	FNodeCodeDiffResult Result;
 
 	if (UMaterial* Material = Cast<UMaterial>(Asset))
 	{
@@ -66,7 +67,7 @@ FString UMaterialGraphEditingLibrary::WriteGraph(const FString& AssetPath, const
 		return FString();
 	}
 
-	return FMaterialGraphDiffer::DiffResultToJson(Result);
+	return FNodeCodeTextFormat::DiffResultToJson(Result);
 }
 
 FString UMaterialGraphEditingLibrary::Relayout(const FString& AssetPath)
@@ -129,7 +130,8 @@ FString UMaterialGraphEditingLibrary::ListScopes(const FString& AssetPath)
 	Root->SetArrayField(TEXT("scopes"), ScopeValues);
 
 	FString OutputString;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutputString);
 	FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
 	return OutputString;
 }
