@@ -56,13 +56,14 @@ For Unreal Engine, this strategy has a natural fit. UE itself is highly modular 
 
 ```
 Skills/
-├── unreal-client-protocol/     # Transport: protocol spec, invocation patterns
-├── unreal-object-operation/    # Foundation: property R/W, object search, metadata
-├── unreal-actor-editing/       # Scene: Actor lifecycle management
-├── unreal-asset-operation/     # Assets: search, dependencies, CRUD
-├── unreal-material-editing/    # Materials: node graphs, HLSL, material instances
-├── unreal-animation/           # (future) Animation layer
-├── unreal-blueprint/           # (future) Blueprint layer
+├── unreal-client-protocol/            # Transport: protocol spec, invocation patterns
+├── unreal-object-operation/           # Foundation: property R/W, object search, metadata
+├── unreal-actor-editing/              # Scene: Actor lifecycle management
+├── unreal-asset-operation/            # Assets: search, dependencies, CRUD
+├── unreal-material-editing/           # Materials: node graphs, HLSL, material instances
+├── unreal-blueprint-editing/          # Blueprints: node graph R/W, function/event/variable editing
+├── unreal-large-blueprint-analysis/   # BP Analysis: systematic large Blueprint analysis & C++ translation
+├── unreal-animation/                  # (future) Animation layer
 └── ...
 ```
 
@@ -74,13 +75,12 @@ More importantly, **this is an open, community-collaborative architecture.** Any
 
 - **Zero Intrusion** — Pure plugin architecture; drop into `Plugins/` and go, no engine source changes required
 - **Reflection-Driven** — Leverages UE's native reflection system to automatically discover all `UFunction` and `UPROPERTY` fields
-- **Minimal Protocol** — Only `call` + `batch` commands, covering every reflectable operation in the engine
-- **Batch Execution** — Send multiple commands in a single request to minimize round-trips
+- **Minimal Protocol** — Only `call` command, covering every reflectable operation in the engine
 - **Editor Integration** — Property writes are automatically registered with the Undo/Redo system
 - **WorldContext Auto-Injection** — No need to manually pass WorldContext parameters
 - **Security Controls** — Loopback-only binding, class path allowlists, and function blocklists
 - **Batteries-Included Python Client** — Lightweight CLI script to talk to the engine in one line
-- **Domain Skill Ecosystem** — 5 specialized Skills covering objects, Actors, assets, and materials; Agent loads domain knowledge on demand
+- **Domain Skill Ecosystem** — 7 specialized Skills covering objects, Actors, assets, materials, and Blueprints; Agent loads domain knowledge on demand
 - **Multi-Tool Compatible** — Skill descriptors work with Cursor / Claude Code / OpenCode and other mainstream AI coding tools
 
 ## Skill Ecosystem
@@ -91,11 +91,13 @@ Currently available Skills:
 
 | Skill | Layer | Capabilities |
 |-------|-------|-------------|
-| `unreal-client-protocol` | Transport | TCP/JSON communication, `call` / `batch` protocol, error handling & self-correction |
+| `unreal-client-protocol` | Transport | TCP/JSON communication, `call` protocol, error handling & self-correction |
 | `unreal-object-operation` | Foundation | Any UObject property R/W, metadata introspection, instance search, derived class discovery, Undo/Redo |
 | `unreal-actor-editing` | Scene | Actor spawn / delete / duplicate / move / select, level queries, viewport control |
 | `unreal-asset-operation` | Assets | AssetRegistry search, dependency & reference analysis, asset CRUD, editor operations |
 | `unreal-material-editing` | Materials | Text-based material node graph R/W, Custom HLSL, material instance editing, compilation & stats |
+| `unreal-blueprint-editing` | Blueprints | Text-based Blueprint node graph R/W, function / event / macro editing, variable creation, auto-compilation |
+| `unreal-large-blueprint-analysis` | BP Analysis | Systematic large Blueprint (10+ functions) analysis, C++ translation, logic auditing |
 
 Each Skill is a standalone SKILL.md file that the Agent reads on demand when receiving a task. Skills naturally chain through the UCP protocol layer — for example, creating a material requires `unreal-asset-operation`'s asset creation + `unreal-material-editing`'s node graph editing + `unreal-object-operation`'s property setting; the Agent automatically combines multiple Skills to complete composite tasks.
 
@@ -114,6 +116,8 @@ flowchart TD
         ActorSkill["unreal-actor-editing<br/>Scene"]
         Asset["unreal-asset-operation<br/>Assets"]
         Mat["unreal-material-editing<br/>Materials"]
+        BP["unreal-blueprint-editing<br/>Blueprints"]
+        BPAnalysis["unreal-large-blueprint-analysis<br/>BP Analysis"]
     end
 
     subgraph engine ["Unreal Engine"]
@@ -128,6 +132,8 @@ flowchart TD
     Agent --> ActorSkill
     Agent --> Asset
     Agent --> Mat
+    Agent --> BP
+    Agent --> BPAnalysis
     Proto --> UCP_Py
     UCP_Py --> Server
     Server --> Reflect
@@ -153,6 +159,123 @@ flowchart LR
     Invoker --> Converter
 ```
 
+### NodeCode: Text-Based Intermediate Representation for Node Graphs
+
+For visual node graphs like materials and Blueprints, creating nodes one by one via `call`, setting properties, and wiring pins is both tedious and error-prone.
+UCP introduces a NodeCode syntax — a **text-based intermediate representation (IR)** that lets AI edit node graphs as naturally as editing code.
+
+NodeCode encodes a node graph into three sections with this basic format:
+
+```
+=== scope: BaseColor ===
+
+=== nodes ===
+N0 MaterialExpressionScalarParameter {ParameterName:"Roughness", DefaultValue:0.5} #a1b2c3d4...
+N1 MaterialExpressionMultiply #e5f6a7b8...
+
+=== links ===
+N0 -> N1.A
+N1 -> [BaseColor]
+```
+
+- **Node line**: `N<index> <ClassName> {properties} #<GUID>` — GUID ensures stable identity across read/write cycles
+- **Link line**: `N<source>.Output -> N<target>.Input` or `N<source> -> [GraphOutput]`
+
+#### AI Interaction Flow
+
+```mermaid
+sequenceDiagram
+    participant Agent as AI Agent
+    participant UCP as UCP.py
+    participant NC as NodeCode
+    participant Graph as UE Node Graph
+
+    Agent->>UCP: ReadGraph(AssetPath, Scope)
+    UCP->>NC: BuildIR
+    NC->>Graph: Traverse nodes & links
+    Graph-->>NC: Node data
+    NC-->>UCP: IR → text
+    UCP-->>Agent: Return NodeCode text
+
+    Note over Agent: Understand graph structure, generate modified text
+
+    Agent->>UCP: WriteGraph(AssetPath, Scope, NewText)
+    UCP->>NC: ParseText → new IR
+    NC->>NC: DiffAndApply (compare old & new IR)
+    NC->>Graph: Incrementally apply changes
+    Graph-->>NC: Done
+    NC-->>UCP: Return diff result
+    UCP-->>Agent: Change summary
+```
+
+#### On-Demand Reading Strategy
+
+A complex material may have dozens of output pins and subgraphs; a Blueprint may contain multiple functions and event graphs.
+
+Serializing everything at once wastes tokens and floods the context window.
+
+NodeCode therefore introduces a **Scope** mechanism — the Agent first gets a table of contents, then reads on demand:
+
+```mermaid
+flowchart LR
+    List["ListScopes<br/>Get scope list"]
+    Decide{"Agent decides<br/>which scopes needed"}
+    Read1["ReadGraph<br/>Scope A"]
+    Read2["ReadGraph<br/>Scope B"]
+    Skip["Skip irrelevant scopes"]
+    Write1["WriteGraph<br/>Scope A"]
+
+    List --> Decide
+    Decide --> Read1
+    Decide --> Read2
+    Decide --> Skip
+    Read1 --> Write1
+```
+
+For materials, `ListScopes` returns all output pins (`BaseColor`, `Roughness`, `Normal`...) and `Composite:` subgraphs. The Agent reads only the relevant scopes based on the task — modifying roughness only requires `ReadGraph("Roughness")`, no need to load the entire material graph. Writes are similarly scoped; the incremental diff only affects nodes within that scope, leaving everything else untouched.
+
+#### Programmatic Processing: Diff & Apply
+
+After the Agent modifies the text, NodeCode doesn't rebuild the entire graph — it precisely applies changes through incremental diffing:
+
+```mermaid
+flowchart TD
+    NewText["Text submitted by Agent"]
+    ParseText["ParseText → new IR"]
+    BuildOldIR["BuildIR → old IR (read from current graph)"]
+    Match["Match nodes<br/>GUID → key properties → class name"]
+    Delete["Delete: remove unmatched nodes from old graph"]
+    Create["Create: instantiate unmatched nodes from new IR"]
+    Update["Update: apply property changes to matched nodes"]
+    DiffLinks["Link diff: disconnect extra links, establish new ones"]
+    PostApply["Post-process: recompile, relayout, refresh UI"]
+
+    NewText --> ParseText
+    ParseText --> Match
+    BuildOldIR --> Match
+    Match --> Delete
+    Delete --> Create
+    Create --> Update
+    Update --> DiffLinks
+    DiffLinks --> PostApply
+```
+
+Advantages of this incremental strategy:
+
+- **Minimal changes**: Only modifies what actually changed, leaving other nodes and links untouched
+- **External link safety**: Links outside the scope are never affected
+- **Protected nodes**: Critical nodes like FunctionEntry / FunctionResult are never accidentally deleted
+- **Automatic post-processing**: Materials auto-recompile; Blueprints are auto-marked as needing compilation
+
+#### Supported Graph Types
+
+| Graph Type | API | Scope Model |
+|------------|-----|-------------|
+| Materials | `UMaterialGraphEditingLibrary` | Material output pins (BaseColor, Roughness...) or `Composite:<Name>` subgraphs |
+| Blueprints | `UBlueprintGraphEditingLibrary` | EventGraph, `Function:<FunctionName>`, `Macro:<MacroName>` |
+
+See the [NodeCode Architecture Document](Docs/NodeCode.md) for detailed format specifications and usage.
+
 ## Quick Start
 
 ### 1. Install the Plugin
@@ -164,7 +287,7 @@ Copy the `UnrealClientProtocol` folder into your project's `Plugins/` directory 
 Once the editor starts, the plugin automatically listens on `127.0.0.1:9876`. Test it with the bundled Python client:
 
 ```bash
-python Plugins/UnrealClientProtocol/Skills/unreal-client-protocol/scripts/UCP.py '{"type":"call","object":"/Script/UnrealClientProtocol.Default__ObjectOperationLibrary","function":"FindObjectInstances","params":{"ClassName":"/Script/Engine.World","Limit":3}}'
+echo '{"object":"/Script/UnrealClientProtocol.Default__ObjectOperationLibrary","function":"FindObjectInstances","params":{"ClassName":"/Script/Engine.World"}}' | python Plugins/UnrealClientProtocol/Skills/unreal-client-protocol/scripts/UCP.py
 ```
 
 If you see a list of World objects, you're all set.
@@ -206,8 +329,12 @@ The resulting directory structure:
 │   └── SKILL.md                             # Actor operations
 ├── unreal-asset-operation/
 │   └── SKILL.md                             # Asset operations
-└── unreal-material-editing/
-    └── SKILL.md                             # Material operations
+├── unreal-material-editing/
+│   └── SKILL.md                             # Material operations
+├── unreal-blueprint-editing/
+│   └── SKILL.md                             # Blueprint editing
+└── unreal-large-blueprint-analysis/
+    └── SKILL.md                             # Large Blueprint analysis
 ```
 
 **Resolving Script Execution Policy Issues (Windows)**
@@ -274,16 +401,17 @@ Configure via **Editor → Project Settings → Plugins → UCP**:
 
 - **Latent functions** (those with `FLatentActionInfo` parameters) are not supported
 - **Delegates** cannot be passed as parameters
-- Editor builds only
 
 ## Roadmap
 
-- [x] Atomic protocol (call / batch / reflection-driven)
+- [x] Atomic protocol (call / reflection-driven)
 - [x] Object operations (property R/W, metadata introspection, instance search, Undo/Redo)
 - [x] Material text serialization (node graph R/W, Custom HLSL, material instance editing)
 - [x] Actor operations (spawn, delete, duplicate, select, transform)
 - [x] Asset management (AssetRegistry search, dependency analysis, CRUD, editor operations)
-- [ ] Blueprint text serialization
+- [x] Blueprint text serialization (node graph R/W, function / event / macro editing, large Blueprint analysis & C++ translation)
+- [ ] Widget text serialization
+- [ ] Niagara text serialization
 - [ ] Visual perception (screenshots / preview feedback so the Agent can "see" its own results)
 - [ ] Skill memory layering & self-feedback (experience accumulation, output self-validation, continuous knowledge growth)
 
