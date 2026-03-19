@@ -7,23 +7,47 @@
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
+#include "ObjectTools.h"
+#include "UObject/UObjectGlobals.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogObjectEditorOp, Log, All);
 
 static FString JsonObjectToString(const TSharedPtr<FJsonObject>& Obj)
 {
 	FString OutputString;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutputString);
 	FJsonSerializer::Serialize(Obj.ToSharedRef(), Writer);
 	return OutputString;
 }
 
-FString UObjectEditorOperationLibrary::UndoTransaction()
+FString UObjectEditorOperationLibrary::UndoTransaction(const FString& Keyword)
 {
-	if (!GEditor)
+	if (!GEditor || !GEditor->Trans)
 	{
 		UE_LOG(LogObjectEditorOp, Error, TEXT("Undo: GEditor not available"));
 		return FString();
+	}
+
+	if (!Keyword.IsEmpty())
+	{
+		if (!GEditor->Trans->CanUndo())
+		{
+			TSharedPtr<FJsonObject> Err = MakeShared<FJsonObject>();
+			Err->SetStringField(TEXT("error"), TEXT("Nothing to undo"));
+			Err->SetStringField(TEXT("keyword"), Keyword);
+			return JsonObjectToString(Err);
+		}
+		FTransactionContext Ctx = GEditor->Trans->GetUndoContext();
+		FString Title = Ctx.Title.ToString();
+		if (!Title.Contains(Keyword))
+		{
+			TSharedPtr<FJsonObject> Err = MakeShared<FJsonObject>();
+			Err->SetStringField(TEXT("error"), TEXT("Top undo transaction does not match keyword"));
+			Err->SetStringField(TEXT("keyword"), Keyword);
+			Err->SetStringField(TEXT("topTransaction"), Title);
+			return JsonObjectToString(Err);
+		}
 	}
 
 	if (!GEditor->UndoTransaction())
@@ -34,12 +58,33 @@ FString UObjectEditorOperationLibrary::UndoTransaction()
 	return FString();
 }
 
-FString UObjectEditorOperationLibrary::RedoTransaction()
+FString UObjectEditorOperationLibrary::RedoTransaction(const FString& Keyword)
 {
-	if (!GEditor)
+	if (!GEditor || !GEditor->Trans)
 	{
 		UE_LOG(LogObjectEditorOp, Error, TEXT("Redo: GEditor not available"));
 		return FString();
+	}
+
+	if (!Keyword.IsEmpty())
+	{
+		if (!GEditor->Trans->CanRedo())
+		{
+			TSharedPtr<FJsonObject> Err = MakeShared<FJsonObject>();
+			Err->SetStringField(TEXT("error"), TEXT("Nothing to redo"));
+			Err->SetStringField(TEXT("keyword"), Keyword);
+			return JsonObjectToString(Err);
+		}
+		FTransactionContext Ctx = GEditor->Trans->GetRedoContext();
+		FString Title = Ctx.Title.ToString();
+		if (!Title.Contains(Keyword))
+		{
+			TSharedPtr<FJsonObject> Err = MakeShared<FJsonObject>();
+			Err->SetStringField(TEXT("error"), TEXT("Top redo transaction does not match keyword"));
+			Err->SetStringField(TEXT("keyword"), Keyword);
+			Err->SetStringField(TEXT("topTransaction"), Title);
+			return JsonObjectToString(Err);
+		}
 	}
 
 	if (!GEditor->RedoTransaction())
@@ -89,4 +134,37 @@ FString UObjectEditorOperationLibrary::GetTransactionState()
 	Result->SetNumberField(TEXT("queueLength"), GEditor->Trans->GetQueueLength());
 
 	return JsonObjectToString(Result);
+}
+
+bool UObjectEditorOperationLibrary::ForceReplaceReferences(const FString& ReplacementObjectPath, const TArray<FString>& ObjectsToReplacePaths)
+{
+	UObject* Replacement = StaticLoadObject(UObject::StaticClass(), nullptr, *ReplacementObjectPath);
+	if (!Replacement)
+	{
+		UE_LOG(LogObjectEditorOp, Error, TEXT("ForceReplaceReferences: Replacement object not found: %s"), *ReplacementObjectPath);
+		return false;
+	}
+
+	TArray<UObject*> ObjectsToReplace;
+	for (const FString& Path : ObjectsToReplacePaths)
+	{
+		UObject* Obj = StaticLoadObject(UObject::StaticClass(), nullptr, *Path);
+		if (Obj)
+		{
+			ObjectsToReplace.Add(Obj);
+		}
+		else
+		{
+			UE_LOG(LogObjectEditorOp, Warning, TEXT("ForceReplaceReferences: Object not found: %s"), *Path);
+		}
+	}
+
+	if (ObjectsToReplace.Num() == 0)
+	{
+		UE_LOG(LogObjectEditorOp, Warning, TEXT("ForceReplaceReferences: No valid objects to replace"));
+		return false;
+	}
+
+	ObjectTools::ForceReplaceReferences(Replacement, ObjectsToReplace);
+	return true;
 }

@@ -13,11 +13,14 @@ class UObjectEditorOperationLibrary : public UBlueprintFunctionLibrary
 
 public:
 	UFUNCTION(BlueprintCallable, Category = "UCP|Object|Editor")
-	static FString UndoTransaction();
+	static FString UndoTransaction(const FString& Keyword = TEXT(""));
 
 	UFUNCTION(BlueprintCallable, Category = "UCP|Object|Editor")
-	static FString RedoTransaction();
+	static FString RedoTransaction(const FString& Keyword = TEXT(""));
 
 	UFUNCTION(BlueprintCallable, Category = "UCP|Object|Editor")
 	static FString GetTransactionState();
+
+	UFUNCTION(BlueprintCallable, Category = "UCP|Object|Editor")
+	static bool ForceReplaceReferences(const FString& ReplacementObjectPath, const TArray<FString>& ObjectsToReplacePaths);
 };

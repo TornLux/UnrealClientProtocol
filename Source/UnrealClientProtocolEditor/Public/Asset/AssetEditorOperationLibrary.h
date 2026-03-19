@@ -15,4 +15,10 @@ class UAssetEditorOperationLibrary : public UBlueprintFunctionLibrary
 public:
 	UFUNCTION(BlueprintCallable, Category = "UCP|Asset|Editor")
 	static TScriptInterface<IAssetRegistry> GetAssetRegistry();
+
+	UFUNCTION(BlueprintCallable, Category = "UCP|Asset|Editor")
+	static int32 ForceDeleteAssets(const TArray<FString>& AssetPaths);
+
+	UFUNCTION(BlueprintCallable, Category = "UCP|Asset|Editor")
+	static bool FixupReferencers(const TArray<FString>& AssetPaths);
 };

@@ -8,21 +8,23 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UnrealType.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
-#if WITH_EDITOR
-#include "ScopedTransaction.h"
-#endif
+#include "GameFramework/Actor.h"
+#include "Components/ActorComponent.h"
+#include "Components/SceneComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogObjectOp, Log, All);
 
 static FString JsonObjectToString(const TSharedPtr<FJsonObject>& Obj)
 {
 	FString OutputString;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutputString);
 	FJsonSerializer::Serialize(Obj.ToSharedRef(), Writer);
 	return OutputString;
 }
@@ -94,7 +96,6 @@ FString UObjectOperationLibrary::SetObjectProperty(const FString& ObjectPath, co
 
 #if WITH_EDITOR
 	Obj->SetFlags(RF_Transactional);
-	FScopedTransaction Transaction(FText::FromString(FString::Printf(TEXT("UCP: Set %s.%s"), *Obj->GetName(), *PropertyName)));
 	Obj->Modify();
 	Obj->PreEditChange(Prop);
 #endif
@@ -224,6 +225,125 @@ FString UObjectOperationLibrary::FindDerivedClasses(const FString& ClassName, bo
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetArrayField(TEXT("classes"), ClassPaths);
+	Result->SetNumberField(TEXT("count"), Count);
+	return JsonObjectToString(Result);
+}
+
+FString UObjectOperationLibrary::ListComponents(const FString& ObjectPath)
+{
+	if (ObjectPath.IsEmpty())
+	{
+		UE_LOG(LogObjectOp, Error, TEXT("ListComponents: Missing ObjectPath"));
+		return FString();
+	}
+
+	UObject* Obj = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath);
+	if (!Obj)
+	{
+		Obj = StaticLoadObject(UObject::StaticClass(), nullptr, *ObjectPath);
+	}
+	if (!Obj)
+	{
+		UE_LOG(LogObjectOp, Error, TEXT("ListComponents: Object not found: %s"), *ObjectPath);
+		return FString();
+	}
+
+	TArray<TSharedPtr<FJsonValue>> CompArray;
+
+	AActor* Actor = Cast<AActor>(Obj);
+	if (Actor)
+	{
+		TInlineComponentArray<UActorComponent*> Components;
+		Actor->GetComponents(Components);
+		for (UActorComponent* Comp : Components)
+		{
+			if (!Comp) continue;
+			TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+			CompObj->SetStringField(TEXT("name"), Comp->GetName());
+			CompObj->SetStringField(TEXT("class"), Comp->GetClass()->GetName());
+			CompObj->SetStringField(TEXT("path"), Comp->GetPathName());
+
+			if (USceneComponent* SceneComp = Cast<USceneComponent>(Comp))
+			{
+				USceneComponent* Parent = SceneComp->GetAttachParent();
+				CompObj->SetStringField(TEXT("parent"), Parent ? Parent->GetName() : TEXT(""));
+			}
+
+			CompArray.Add(MakeShared<FJsonValueObject>(CompObj));
+		}
+	}
+	else
+	{
+		ForEachObjectWithOuter(Obj, [&CompArray](UObject* SubObj)
+		{
+			TSharedPtr<FJsonObject> SubObjJson = MakeShared<FJsonObject>();
+			SubObjJson->SetStringField(TEXT("name"), SubObj->GetName());
+			SubObjJson->SetStringField(TEXT("class"), SubObj->GetClass()->GetName());
+			SubObjJson->SetStringField(TEXT("path"), SubObj->GetPathName());
+			CompArray.Add(MakeShared<FJsonValueObject>(SubObjJson));
+		}, false);
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetArrayField(TEXT("components"), CompArray);
+	Result->SetNumberField(TEXT("count"), CompArray.Num());
+	return JsonObjectToString(Result);
+}
+
+FString UObjectOperationLibrary::FindObjectsByOuter(const FString& OuterPath, const FString& ClassName, int32 Limit)
+{
+	if (OuterPath.IsEmpty())
+	{
+		UE_LOG(LogObjectOp, Error, TEXT("FindObjectsByOuter: Missing OuterPath"));
+		return FString();
+	}
+
+	UObject* OuterObj = StaticFindObject(UObject::StaticClass(), nullptr, *OuterPath);
+	if (!OuterObj)
+	{
+		OuterObj = StaticLoadObject(UObject::StaticClass(), nullptr, *OuterPath);
+	}
+	if (!OuterObj)
+	{
+		UE_LOG(LogObjectOp, Error, TEXT("FindObjectsByOuter: Outer not found: %s"), *OuterPath);
+		return FString();
+	}
+
+	UClass* FilterClass = nullptr;
+	if (!ClassName.IsEmpty())
+	{
+		FilterClass = FindObject<UClass>(nullptr, *ClassName);
+		if (!FilterClass)
+		{
+			FilterClass = LoadObject<UClass>(nullptr, *ClassName);
+		}
+		if (!FilterClass)
+		{
+			UE_LOG(LogObjectOp, Error, TEXT("FindObjectsByOuter: Class not found: %s"), *ClassName);
+			return FString();
+		}
+	}
+
+	Limit = FMath::Clamp(Limit, 1, 10000);
+
+	TArray<TSharedPtr<FJsonValue>> ObjectArray;
+	int32 Count = 0;
+
+	ForEachObjectWithOuter(OuterObj, [&](UObject* SubObj)
+	{
+		if (Count >= Limit) return;
+		if (FilterClass && !SubObj->IsA(FilterClass)) return;
+
+		TSharedPtr<FJsonObject> ObjJson = MakeShared<FJsonObject>();
+		ObjJson->SetStringField(TEXT("name"), SubObj->GetName());
+		ObjJson->SetStringField(TEXT("class"), SubObj->GetClass()->GetName());
+		ObjJson->SetStringField(TEXT("path"), SubObj->GetPathName());
+		ObjectArray.Add(MakeShared<FJsonValueObject>(ObjJson));
+		Count++;
+	}, true);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetArrayField(TEXT("objects"), ObjectArray);
 	Result->SetNumberField(TEXT("count"), Count);
 	return JsonObjectToString(Result);
 }

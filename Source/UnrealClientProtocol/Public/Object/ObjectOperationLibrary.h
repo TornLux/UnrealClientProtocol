@@ -32,4 +32,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "UCP|Object")
 	static FString FindDerivedClasses(const FString& ClassName, bool bRecursive = true, int32 Limit = 500);
+
+	UFUNCTION(BlueprintCallable, Category = "UCP|Object")
+	static FString ListComponents(const FString& ObjectPath);
+
+	UFUNCTION(BlueprintCallable, Category = "UCP|Object")
+	static FString FindObjectsByOuter(const FString& OuterPath, const FString& ClassName = TEXT(""), int32 Limit = 100);
 };
