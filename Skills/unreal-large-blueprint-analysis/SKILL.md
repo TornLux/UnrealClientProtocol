@@ -5,29 +5,29 @@ description: Systematically analyze and translate large UE Blueprints (10+ funct
 
 # Large Blueprint Analysis
 
-Systematic strategy for reading, understanding, and translating large Blueprints (10+ scopes, 100+ nodes). Builds on the `unreal-blueprint-editing` and `unreal-object-operation` skills.
+Systematic strategy for reading, understanding, and translating large Blueprints (10+ sections, 100+ nodes). Builds on the `unreal-blueprint-editing` and `unreal-object-operation` skills.
 
 **Prerequisite**: UE editor running with UCP plugin enabled. Read the `unreal-blueprint-editing` skill first for API details.
 
 ## Why This Skill Exists
 
-Large Blueprints can have 40+ scopes and 1000+ nodes. A single ReadGraph call for the EventGraph alone can return 100KB+ of text. Naive approaches fail because:
+Large Blueprints can have 40+ sections and 1000+ nodes. A single ReadGraph call for the EventGraph alone can return 100KB+ of text. Naive approaches fail because:
 
-- Reading all scopes at once exceeds context window limits
-- Skipping scopes and "guessing" from general knowledge produces inaccurate code
+- Reading all sections at once exceeds context window limits
+- Skipping sections and "guessing" from general knowledge produces inaccurate code
 - Unstructured reading leads to missed dependencies between functions
 
 ## Phase 1 — Inventory
 
 Get the complete structure before reading any graph content.
 
-### Step 1.1: List all scopes
+### Step 1.1: List all sections
 
 ```json
-{"object":"/Script/UnrealClientProtocolEditor.Default__BlueprintGraphEditingLibrary","function":"ListScopes","params":{"AssetPath":"<asset_path>"}}
+{"object":"/Script/UnrealClientProtocolEditor.Default__NodeCodeEditingLibrary","function":"Outline","params":{"AssetPath":"<asset_path>"}}
 ```
 
-Record the full list. Categorize each scope:
+Record the full list. Categorize each section:
 
 | Category | Examples | Priority |
 |----------|---------|----------|
@@ -47,9 +47,9 @@ Use `unreal-object-operation` skill's `DescribeObject` to get all UPROPERTY vari
 The CDO path for a Blueprint class `MyBlueprint_C` in package `/Game/BP/MyBlueprint` is:
 `/Game/BP/MyBlueprint.Default__MyBlueprint_C`
 
-### Step 1.3: Build a scope dependency map
+### Step 1.3: Build a section dependency map
 
-Before reading graph content, infer dependencies from scope names:
+Before reading graph content, infer dependencies from section names:
 
 - `Function:Initialize` likely calls `Function:SetupRT`, `Function:SetCaptureMesh`, etc.
 - `EventGraph` likely calls most functions and responds to UI events
@@ -57,18 +57,18 @@ Before reading graph content, infer dependencies from scope names:
 
 ## Phase 2 — Systematic Reading
 
-**Rule: Read scopes in dependency order, not alphabetical order. Process each scope completely before moving to the next.**
+**Rule: Read sections in dependency order, not alphabetical order. Process each section completely before moving to the next.**
 
 ### Reading strategy
 
-1. **Read one scope at a time** — keep output manageable
+1. **Read one section at a time** — keep output manageable
 2. **Start with entry points** — EventGraph first, then Construct/PreConstruct
-3. **Follow the call chain** — when a scope calls `Function:Foo`, queue `Function:Foo` for reading
-4. **Use a SubAgent for each scope's pseudocode translation** — see below
+3. **Follow the call chain** — when a section calls `Function:Foo`, queue `Function:Foo` for reading
+4. **Use a SubAgent for each section's pseudocode translation** — see below
 
 ### Use SubAgents for pseudocode translation
 
-**For each scope you read, launch a SubAgent to translate the NodeCode into pseudocode.** This is critical for large Blueprints because:
+**For each section you read, launch a SubAgent to translate the NodeCode into pseudocode.** This is critical for large Blueprints because:
 
 - Raw NodeCode for a 50-node function easily fills 5KB+ of text — it will crowd out your reasoning context
 - SubAgent processes the NodeCode in isolation, returns a compact pseudocode summary
@@ -84,35 +84,35 @@ Before reading graph content, infer dependencies from scope names:
 >
 > Return:
 > 1. Pseudocode (one line per statement, with comments for non-obvious logic)
-> 2. Summary: what this scope does, what variables it reads/writes, what functions it calls
+> 2. Summary: what this section does, what variables it reads/writes, what functions it calls
 
-**Workflow per scope:**
+**Workflow per section:**
 
 1. ReadGraph → get NodeCode
 2. Launch SubAgent with the NodeCode → get pseudocode back
 3. Record the pseudocode summary in your main context
-4. Move to next scope
+4. Move to next section
 
 ### Reading template
 
-Read one scope at a time:
+Read one section at a time:
 
 ```json
-{"object":"/Script/UnrealClientProtocolEditor.Default__BlueprintGraphEditingLibrary","function":"ReadGraph","params":{"AssetPath":"<path>","ScopeName":"Function:Initialize"}}
+{"object":"/Script/UnrealClientProtocolEditor.Default__NodeCodeEditingLibrary","function":"ReadGraph","params":{"AssetPath":"<path>","Section":"Function:Initialize"}}
 ```
 
 ### Handling large outputs
 
-If a single scope's ReadGraph output exceeds ~50KB (e.g., a 200+ node EventGraph):
+If a single section's ReadGraph output exceeds ~50KB (e.g., a 200+ node EventGraph):
 
-1. Read it alone (not batched with other scopes)
+1. Read it alone (not batched with other sections)
 2. If the Shell output is written to a file, split and read in chunks
 3. Focus on extracting: **node types, function calls, variable reads/writes, and link topology**
 4. For EventGraph specifically, identify all **event handlers** (Event:*, K2Node_ComponentBoundEvent) as separate logical blocks
 
 ### Pseudocode translation
 
-**CRITICAL: After reading each scope, immediately translate the NodeCode into pseudocode.** This is the most important step — NodeCode describes structure, not logic. You must reconstruct the control flow and data flow to understand what the scope actually does.
+**CRITICAL: After reading each section, immediately translate the NodeCode into pseudocode.** This is the most important step — NodeCode describes structure, not logic. You must reconstruct the control flow and data flow to understand what the section actually does.
 
 1. Find the entry node (FunctionEntry, Event, CustomEvent)
 2. Follow `then`/`execute` exec links to build statement order
@@ -120,9 +120,9 @@ If a single scope's ReadGraph output exceeds ~50KB (e.g., a 200+ node EventGraph
 4. Collapse math/utility chains into inline expressions
 5. Branch → `if/else`, ForEachLoop → `for`, Sequence → sequential blocks
 
-### Scope summary format
+### Section summary format
 
-After translating each scope, record a summary like:
+After translating each section, record a summary like:
 
 ```
 ## Function:Initialize
@@ -172,7 +172,7 @@ When converting Blueprint to C++, follow these rules:
 
 ### Node-by-node translation
 
-For each node in a scope, translate directly:
+For each node in a section, translate directly:
 
 | Node text | C++ code |
 |---|---|
@@ -208,11 +208,11 @@ When the Blueprint references content assets (materials, MPC, textures):
 
 ### Completeness check
 
-After translation, verify every scope has been processed:
+After translation, verify every section has been processed:
 
-1. Re-read the ListScopes output
-2. Check off each scope against your C++ implementation
-3. Any unprocessed scope = missing functionality
+1. Re-read the Outline output
+2. Check off each section against your C++ implementation
+3. Any unprocessed section = missing functionality
 
 ### Compile and test
 
@@ -224,8 +224,8 @@ After translation, verify every scope has been processed:
 
 | Bad practice | Why it fails | Correct approach |
 |---|---|---|
-| Read 4 scopes, write all C++ | 90% of logic is guessed, not translated | Read every scope, translate each one |
-| Read all 40 scopes in one batch | Output too large, context overflow | Batch 3-5 at a time |
+| Read 4 sections, write all C++ | 90% of logic is guessed, not translated | Read every section, translate each one |
+| Read all 40 sections in one batch | Output too large, context overflow | Batch 3-5 at a time |
 | Skip macros ("they're just helpers") | Macros contain critical logic (RT creation, mip chain, mesh saving) | Read every macro that's called |
 | Use general UE knowledge instead of reading the graph | Actual implementation may differ from standard patterns | Always read first, then translate what you see |
 | Translate EventGraph as one monolithic function | EventGraph has many independent event handlers | Split each event handler into its own C++ function |

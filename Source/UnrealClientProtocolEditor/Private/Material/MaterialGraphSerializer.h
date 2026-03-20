@@ -14,21 +14,25 @@ struct FExpressionOutput;
 class FMaterialGraphSerializer
 {
 public:
-	static FString Serialize(UMaterial* Material, const FString& ScopeName);
-	static FString Serialize(UMaterialFunction* MaterialFunction, const FString& ScopeName);
+	static FNodeCodeGraphIR BuildIR(UMaterial* Material);
+	static FNodeCodeGraphIR BuildCompositeIR(UMaterial* Material, const FString& CompositeName);
+	static FNodeCodeGraphIR BuildIR(UMaterialFunction* MaterialFunction);
 
-	static FNodeCodeGraphIR BuildIR(UMaterial* Material, const FString& ScopeName);
-	static FNodeCodeGraphIR BuildIR(UMaterialFunction* MaterialFunction, const FString& ScopeName);
+	static TArray<FNodeCodeSectionIR> ListSections(UMaterial* Material);
+	static TArray<FNodeCodeSectionIR> ListSections(UMaterialFunction* MaterialFunction);
 
-	static TArray<FString> ListScopes(UMaterial* Material);
-	static TArray<FString> ListScopes(UMaterialFunction* MaterialFunction);
+	static TMap<FString, FString> ReadMaterialProperties(UMaterial* Material);
 
 private:
 	static FNodeCodeGraphIR BuildIRFromExpressions(
 		TConstArrayView<TObjectPtr<UMaterialExpression>> AllExpressions,
 		UMaterial* Material,
 		UMaterialFunction* MaterialFunction,
-		const FString& ScopeName);
+		UMaterialExpressionComposite* TargetComposite);
+
+	static void CollectAllConnectedNodes(
+		UMaterial* Material,
+		TSet<UMaterialExpression*>& OutReachable);
 
 	static void CollectReachableNodes(
 		UMaterialExpression* StartExpr,
@@ -47,6 +51,4 @@ private:
 
 	static bool IsConnectionProperty(const FProperty* Prop);
 	static bool IsEmbeddedConnectionArrayProperty(const FProperty* Prop);
-
-	static const TSet<FName>& GetBaseClassSkipProperties();
 };

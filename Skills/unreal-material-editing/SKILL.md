@@ -1,17 +1,37 @@
 ---
 name: unreal-material-editing
-description: Edit UE material node graphs via text (ReadGraph/WriteGraph). Use when the user asks to add, remove, or rewire material expression nodes. For setting material properties like ShadingModel or BlendMode, use the unreal-object-operation skill instead.
+description: Edit UE material node graphs and properties via text (ReadGraph/WriteGraph). Use when the user asks to add, remove, or rewire material expression nodes, or change material properties like ShadingModel or BlendMode.
 ---
 
 # Material Editing
 
-Two aspects: **material object properties** (ShadingModel, BlendMode, etc.) via `SetObjectProperty` from `unreal-object-operation` skill, and **node graph** (expression nodes and connections) via this skill's ReadGraph/WriteGraph.
+Material editing covers both **material properties** (ShadingModel, BlendMode, etc.) via the `[Properties]` section, and **node graph** (expression nodes and connections) via the `[Material]` section. Both use the same unified API.
 
 **Prerequisite**: UE editor running with UCP plugin enabled.
 
-## Material Object Properties
+## API
 
-Use `SetObjectProperty` (see `unreal-object-operation` skill):
+CDO: `/Script/UnrealClientProtocolEditor.Default__NodeCodeEditingLibrary`
+
+| Function | Params | Description |
+|----------|--------|-------------|
+| `Outline` | `AssetPath` | Returns available sections (Properties, Material, Composite:Name) |
+| `ReadGraph` | `AssetPath`, `Section` | Returns text. Empty Section = all. `"Material"` = main graph only. |
+| `WriteGraph` | `AssetPath`, `Section`, `GraphText` | Overwrite section. Auto-recompiles, relayouts, refreshes editor. |
+
+## Material Properties
+
+Use the `[Properties]` section to read/write material-level settings:
+
+```
+[Properties]
+ShadingModel: MSM_DefaultLit
+BlendMode: BLEND_Opaque
+TwoSided: true
+OpacityMaskClipValue: 0.333
+```
+
+Common properties:
 
 | Property | Example Values |
 |----------|---------------|
@@ -20,247 +40,138 @@ Use `SetObjectProperty` (see `unreal-object-operation` skill):
 | `MaterialDomain` | `MD_Surface`, `MD_DeferredDecal`, `MD_LightFunction`, `MD_PostProcess`, `MD_UI` |
 | `TwoSided` | `true`, `false` |
 
-## Node Graph API
+Read with `ReadGraph(AssetPath, "Properties")`, write with `WriteGraph(AssetPath, "Properties", text)`.
 
-CDO: `/Script/UnrealClientProtocolEditor.Default__MaterialGraphEditingLibrary`
+## Section Model
 
-| Function | Params | Description |
-|----------|--------|-------------|
-| `ListScopes` | `AssetPath` | Returns available scopes (output pin names, `Composite:` subgraphs) |
-| `ReadGraph` | `AssetPath`, `ScopeName` | Returns text representation. Empty scope = all nodes. |
-| `WriteGraph` | `AssetPath`, `ScopeName`, `GraphText` | Apply changes, returns diff. Auto-relayouts only when nodes or links changed. |
-| `Relayout` | `AssetPath` | Force auto-layout |
+| Section | Description |
+|---------|-------------|
+| `[Properties]` | Material-level properties (ShadingModel, BlendMode, etc.) |
+| `[Material]` | Complete main graph — all non-composite nodes, read/write as one unit |
+| `[Composite:Name]` | Composite subgraph (physically isolated) |
 
-**Workflow**: ListScopes → ReadGraph (target scope only) → modify text → WriteGraph. Always read before write.
-
-**Reading strategy**: Call ListScopes first to see available scopes, then ReadGraph only the scope you need. Use empty scope to read all connected nodes, or a specific scope name (e.g. `BaseColor`) to read a subtree. Batch ListScopes + one ReadGraph in a single UCP call.
+The `[Material]` section contains the **entire main graph**. Output pins are expressed as graph output connections: `> RGB -> [BaseColor]`.
 
 ## Text Format
 
 ```
-=== nodes ===
-N<idx> <ClassName> {Key:Value, Key:Value} #<guid>
+[Material]
 
-=== links ===
-N<from>[.Output] -> N<to>.<Input>
-N<from>[.Output] -> [MaterialOutput]
+N0 TextureSample {Texture:"/Game/Textures/T_Wood_BC"} #ee001122
+  > RGB -> [BaseColor]
+  > A -> N3.A
+
+N1 ScalarParameter {ParameterName:"Roughness", DefaultValue:0.5} #ee003344
+  > -> N3.B
+
+N2 VectorParameter {ParameterName:"EmissiveColor", DefaultValue:{"R":1,"G":0.5,"B":0}} #ee005566
+  > -> N4.A
+
+N3 Multiply #ee007788
+  > -> [Roughness]
+
+N4 Multiply #ee009900
+  > -> [EmissiveColor]
+
+N5 Constant {R:5.0} #ee00aa00
+  > -> N4.B
+
+N6 TextureSample {Texture:"/Game/Textures/T_Wood_N"} #ee00bb00
+  > -> [Normal]
 ```
 
 ### Nodes
 
-- `N<idx>`: local reference ID, 0-based
-- `<ClassName>`: exact UE class name (e.g. `MaterialExpressionScalarParameter`)
-- `{...}`: only non-default properties. Omit braces if none.
-- `#<guid>`: 32-hex GUID. **Preserve for existing nodes, omit for new nodes.**
+- `N<idx>`: local reference ID
+- `<ClassName>`: UMaterialExpression class name without prefix (e.g. `TextureSample`, `ScalarParameter`, `Multiply`)
+- `{...}`: non-default properties, single line
+- `#<guid>`: preserve for existing nodes, omit for new
 
-Property values: `"string"`, `0.5`, `true`, `(R=1.0,G=0.5,B=0.0,A=1.0)`, `"/Game/Textures/T_Diff"`, `SAMPLERTYPE_Color`. Copy unknown formats verbatim.
+### Connections
 
-### Links
-
-- Source: `N0` (single output) or `N0.RGB` (named output: `.R`, `.G`, `.B`, `.A`, `.RGB`, `.RGBA`)
-- Target expression: `N1.InputName`
-- Target material output: `[BaseColor]`, `[Roughness]`, `[EmissiveColor]`, `[Normal]`, etc.
-
-## Common Expression Classes
-
-| Class | Key Properties | Notes |
-|-------|---------------|-------|
-| `MaterialExpressionScalarParameter` | ParameterName, DefaultValue, Group | float param |
-| `MaterialExpressionVectorParameter` | ParameterName, DefaultValue | color/vector param |
-| `MaterialExpressionStaticBoolParameter` | ParameterName, DefaultValue | static bool |
-| `MaterialExpressionTextureSample` | Texture | |
-| `MaterialExpressionConstant` | R | float |
-| `MaterialExpressionConstant2Vector` | R, G | |
-| `MaterialExpressionConstant3Vector` | Constant | FLinearColor |
-| `MaterialExpressionAdd/Subtract/Multiply/Divide` | | A, B |
-| `MaterialExpressionLinearInterpolate` | | A, B, Alpha |
-| `MaterialExpressionClamp` | | Input, Min, Max |
-| `MaterialExpressionOneMinus` | | 1 - Input |
-| `MaterialExpressionPower` | | Base, Exp |
-| `MaterialExpressionDotProduct` | | A, B |
-| `MaterialExpressionNormalize` | | |
-| `MaterialExpressionAppendVector` | | A, B |
-| `MaterialExpressionComponentMask` | R, G, B, A | swizzle |
-| `MaterialExpressionTextureCoordinate` | CoordinateIndex, UTiling, VTiling | |
-| `MaterialExpressionTime` | | game time |
-| `MaterialExpressionWorldPosition` | | |
-| `MaterialExpressionCameraPositionWS` | | |
-| `MaterialExpressionFresnel` | Exponent, BaseReflectFraction | |
-| `MaterialExpressionSaturate/Abs/Ceil/Floor/Frac/SquareRoot` | | single-input math |
-| `MaterialExpressionSine/Cosine` | | Period property |
-| `MaterialExpressionIf` | | pins: A, B, A>B, A==B, A<B |
-| `MaterialExpressionCustom` | Code, OutputType, InputNames | Custom HLSL — see rules below |
-| `MaterialExpressionComposite` | SubgraphName | subgraph container |
-
-### Dynamic-input nodes
-
-**Switch**: `{SwitchInputNames:["Red","Green","Blue"]}` — connect `N1 -> N0.SwitchValue`, `N2 -> N0.Default`, `N3 -> N0.Red`
-
-**SetMaterialAttributes**: `{Attributes:["BaseColor","Roughness"]}` — input 0 is `MaterialAttributes`, then attribute pins by name.
-
-**Custom**: `{InputNames:["UV","Scale"]}` — creates named input pins. Access in HLSL **by name directly**: `UV`, `Scale` (NOT `Inputs[0]`). Connect by name: `N1 -> N0.UV`.
-
-## Custom HLSL Rules
-
-**Only use `MaterialExpressionCustom` when native nodes cannot express the logic:**
-- Loops (`for`/`while`), matrix ops (`float2x2`, `mul`), bitwise ops, complex branching
-
-**Do NOT use for**: simple math, trig, texture sampling, frac/abs/saturate — use native nodes.
-
-**When converting shaders (GLSL/ShaderToy):**
-1. Decompose into logical blocks
-2. Build data flow with native nodes (UV, Time, constants, math, lerps)
-3. Custom HLSL only for irreducible blocks (a loop, a matrix transform)
-4. Each Custom node does ONE thing — small and focused
-5. **Never put an entire shader into one Custom HLSL node**
-
-**Use `struct Functions` pattern** for HLSL helpers to avoid global namespace pollution:
-
-```hlsl
-struct Functions
-{
-    static float2 Rotate2D(float2 P, float Angle)
-    {
-        float C = cos(Angle); float S = sin(Angle);
-        return float2(C*P.x - S*P.y, S*P.x + C*P.y);
-    }
-};
-return Functions::Rotate2D(UV, Angle);
-```
-
-`OutputType`: `CMOT_Float1`, `CMOT_Float2`, `CMOT_Float3`, `CMOT_Float4`.
-
-## Engine Material Utilities
-
-These are UE engine built-in UFunctions (from `UMaterialEditingLibrary`). Call via UCP with CDO `/Script/MaterialEditor.Default__MaterialEditingLibrary`.
-
-### Compile & Update
-
-| Function | Params | Description |
-|----------|--------|-------------|
-| `RecompileMaterial` | `Material` | Recompile a material. Call after graph/property changes to see results in viewport. |
-| `UpdateMaterialFunction` | `MaterialFunction` | Update a MaterialFunction and recompile all materials that reference it. |
-| `UpdateMaterialInstance` | `Instance` | Recompile a MaterialInstanceConstant after parameter changes. |
-
-### Material Instance Editing
-
-| Function | Params | Description |
-|----------|--------|-------------|
-| `SetMaterialInstanceParent` | `Instance`, `NewParent` | Set parent material/instance. |
-| `ClearAllMaterialInstanceParameters` | `Instance` | Clear all overridden parameters. |
-| `SetMaterialInstanceScalarParameterValue` | `Instance`, `ParameterName`, `Value` | Set float parameter. |
-| `SetMaterialInstanceVectorParameterValue` | `Instance`, `ParameterName`, `Value` | Set vector/color parameter. |
-| `SetMaterialInstanceTextureParameterValue` | `Instance`, `ParameterName`, `Value` | Set texture parameter. |
-| `SetMaterialInstanceStaticSwitchParameterValue` | `Instance`, `ParameterName`, `Value` | Set static switch parameter. |
-| `GetMaterialInstanceScalarParameterValue` | `Instance`, `ParameterName` | Get float parameter value. |
-| `GetMaterialInstanceVectorParameterValue` | `Instance`, `ParameterName` | Get vector/color parameter value. |
-| `GetMaterialInstanceTextureParameterValue` | `Instance`, `ParameterName` | Get texture parameter value. |
-| `GetMaterialInstanceStaticSwitchParameterValue` | `Instance`, `ParameterName` | Get static switch value. |
-
-### Parameter Discovery
-
-| Function | Params | Description |
-|----------|--------|-------------|
-| `GetScalarParameterNames` | `Material` | List all scalar parameter names. |
-| `GetVectorParameterNames` | `Material` | List all vector parameter names. |
-| `GetTextureParameterNames` | `Material` | List all texture parameter names. |
-| `GetStaticSwitchParameterNames` | `Material` | List all static switch parameter names. |
-| `GetMaterialDefaultScalarParameterValue` | `Material`, `ParameterName` | Get default scalar value from base material. |
-| `GetMaterialDefaultVectorParameterValue` | `Material`, `ParameterName` | Get default vector value from base material. |
-| `GetMaterialDefaultTextureParameterValue` | `Material`, `ParameterName` | Get default texture from base material. |
-| `GetMaterialDefaultStaticSwitchParameterValue` | `Material`, `ParameterName` | Get default static switch value. |
-
-### Usage & Statistics
-
-| Function | Params | Description |
-|----------|--------|-------------|
-| `HasMaterialUsage` | `Material`, `Usage` | Check if a usage flag is enabled. |
-| `SetBaseMaterialUsage` | `Material`, `Usage`, `bValue` | Enable/disable usage (e.g. `MATUSAGE_SkeletalMesh`). |
-| `GetStatistics` | `Material` | Returns `FMaterialStatistics` (instruction count, samplers, etc.). |
-| `GetNumShaderTypes` | `Material` | Number of compiled shader permutations. |
-| `GetUsedTextures` | `Material` | List all textures referenced by the material. |
-| `GetChildInstances` | `Parent` | Get all direct child MaterialInstances. |
-
-### Relationships
-
-| Function | Params | Description |
-|----------|--------|-------------|
-| `GetChildInstances` | `Parent` | Get all direct child material instances of a material. |
-| `GetMaterialsReferencingFunction` | `InFunction` | Find all materials using a specific MaterialFunction. |
-
-## Pseudocode Translation — Understand Before Modifying
-
-**CRITICAL: After ReadGraph, always translate the NodeCode into pseudocode before making changes.** NodeCode describes structure (nodes, properties, links), not the visual/mathematical intent. You must reconstruct the logic to avoid breaking it.
-
-### Why this matters
-
-NodeCode text like:
+Output connections from the owning node:
 
 ```
-N0 MaterialExpressionTextureSample {Texture:"/Game/T_Noise"} #aabb...
-N1 MaterialExpressionTextureCoordinate {UTiling:2.0, VTiling:2.0} #ccdd...
-N2 MaterialExpressionMultiply #eeff...
-N3 MaterialExpressionScalarParameter {ParameterName:"NoiseStrength", DefaultValue:0.3} #1122...
-N1 -> N0.Coordinates
-N0 -> N2.A
-N3 -> N2.B
-N2 -> [Normal]
+  > OutputPin -> N<target>.InputPin     # to another node
+  > OutputPin -> [GraphOutput]          # to material output (BaseColor, Roughness, etc.)
+  > -> N<target>.InputPin               # single-output node
 ```
 
-Should be understood as:
+### Graph Outputs
+
+Material output pins are expressed as `[PinName]`:
 
 ```
-// Normal map with tiled noise:
-//   UV = TexCoord * (2, 2)
-//   NoiseTex = Sample(T_Noise, UV)
-//   Normal = NoiseTex * NoiseStrength(0.3)
+  > RGB -> [BaseColor]
+  > -> [Roughness]
+  > -> [Normal]
+  > -> [EmissiveColor]
+  > -> [Opacity]
+  > -> [OpacityMask]
+  > -> [Metallic]
+  > -> [WorldPositionOffset]
 ```
 
-### Workflow
+### Common Expression Classes
 
-1. **ReadGraph** — get NodeCode text
-2. **Translate to pseudocode** — trace from material outputs backwards, resolve each input chain into expressions
-3. **Reason about the change** — use pseudocode to understand the shader logic
-4. **Edit the NodeCode** — make structural changes with full understanding
-5. **WriteGraph** — apply
+| ClassName | Description |
+|-----------|-------------|
+| `TextureSample` | Sample a texture |
+| `TextureObject` | Texture reference |
+| `ScalarParameter` | Float parameter |
+| `VectorParameter` | Vector parameter |
+| `StaticSwitchParameter` | Static bool parameter |
+| `Constant` | Float constant |
+| `Constant2Vector` | Vector2 constant |
+| `Constant3Vector` | Vector3 constant |
+| `Constant4Vector` | Vector4 constant |
+| `Multiply` | A * B |
+| `Add` | A + B |
+| `Subtract` | A - B |
+| `Divide` | A / B |
+| `Lerp` | Linear interpolate |
+| `Power` | Base ^ Exponent |
+| `Clamp` | Clamp value |
+| `OneMinus` | 1 - X |
+| `Abs` | Absolute value |
+| `TexCoord` | Texture coordinates |
+| `Time` | Time value |
+| `Panner` | UV panning |
+| `Custom` | Custom HLSL code |
+| `MaterialFunctionCall` | Call a material function |
+| `SetMaterialAttributes` | Set material attributes |
 
-### Use a SubAgent for translation
+## Custom HLSL
 
-When the material graph is large (15+ nodes) or involves complex shader logic, **launch a SubAgent** to do the translation. This keeps the main context focused on the task instead of drowning in raw NodeCode.
+For `MaterialExpressionCustom`, the `Code` property contains HLSL and `InputNames` defines custom inputs:
 
-**SubAgent prompt template:**
+```
+N0 Custom {Code:"float3 result = Input1 * Input2;\nreturn result;", OutputType:CMOT_Float3, InputNames:["A","B"]} #aabb...
+```
 
-> Translate the following Material NodeCode into pseudocode. Trace backwards from each material output, resolve all data dependencies into shader expressions, and identify the visual effect pattern.
->
-> ```
-> (paste NodeCode here)
-> ```
->
-> Return:
-> 1. Per-output pseudocode (e.g. BaseColor = ..., Roughness = ..., Normal = ...)
-> 2. A brief summary: what visual effect this material achieves, what parameters are exposed, what textures are used
+## Material Instances
 
-After the SubAgent returns, use its pseudocode to reason about modifications in the main context.
+Material instance parameter editing uses `SetObjectProperty` from the `unreal-object-operation` skill, not NodeCode. NodeCode is for editing the **parent material's** node graph.
 
-### How to translate (if doing it yourself)
+## Workflow
 
-1. Start from material outputs (`[BaseColor]`, `[Roughness]`, `[Normal]`, etc.)
-2. Trace backwards through links — each link is a data dependency
-3. Collapse chains of math nodes into expressions: `Multiply(A, B)` → `A * B`
-4. Name intermediate values by their semantic meaning (e.g. "FresnelMask", "TiledUV")
-5. Identify common patterns: Fresnel, flowmap, parallax, distance blend, etc.
+1. **Outline** — see what sections exist
+2. **ReadGraph("Properties")** — check current material settings
+3. **ReadGraph("Material")** — get the full node graph
+4. **Modify** — edit properties and/or nodes
+5. **WriteGraph("Properties", text)** — update settings
+6. **WriteGraph("Material", text)** — update graph (auto-recompiles)
 
 ## Key Rules
 
-1. **Prefer native nodes**. Custom HLSL only for irreducible logic (loops, matrix, bitwise). Use `struct Functions` pattern. **Never put entire effects in one Custom node.**
-2. **Translate to pseudocode after reading** — understand the shader logic before editing.
-3. **Preserve GUIDs** on existing nodes. Omit for new nodes.
-4. **Preserve class names and property formats exactly.**
-5. **ReadGraph before WriteGraph** — always read first.
-6. All operations support **Undo** (Ctrl+Z).
+1. **Preserve GUIDs** on existing nodes. Losing GUIDs causes unreliable node matching.
+2. **`[Material]` is the complete main graph** — no per-output-pin splitting.
+3. **ReadGraph before WriteGraph** — always read first.
+4. All operations support **Undo** (Ctrl+Z).
+5. **Incremental diff** — only changed nodes/connections are modified.
 
 ## Error Handling
 
-- Check `errors` array: unknown class, failed connection (wrong pin name), property import failure.
-- Check `warnings` array for non-fatal issues.
-- Re-read after write if unsure.
+- Check `diff` object in response for changes applied.
+- Unknown expression class: `"Unknown expression class: ..."`.
+- Pin not found: `"Input 'X' not found on N0 (ClassName). Available: [...]"`.

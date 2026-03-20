@@ -12,14 +12,17 @@ class UMaterialExpression;
 class FMaterialGraphDiffer
 {
 public:
-	static FNodeCodeDiffResult Apply(UMaterial* Material, const FString& ScopeName, const FString& GraphText);
-	static FNodeCodeDiffResult Apply(UMaterialFunction* MaterialFunction, const FString& ScopeName, const FString& GraphText);
+	static FNodeCodeDiffResult ApplyMaterial(UMaterial* Material, const FNodeCodeGraphIR& NewIR);
+	static FNodeCodeDiffResult ApplyComposite(UMaterial* Material, const FString& CompositeName, const FNodeCodeGraphIR& NewIR);
+	static FNodeCodeDiffResult ApplyFunction(UMaterialFunction* MaterialFunction, const FNodeCodeGraphIR& NewIR);
+
+	static FNodeCodeDiffResult ApplyMaterialProperties(UMaterial* Material, const TMap<FString, FString>& Properties);
 
 private:
 	static FNodeCodeDiffResult DiffAndApply(
 		UMaterial* Material,
 		UMaterialFunction* MaterialFunction,
-		const FString& ScopeName,
+		const FString& CompositeName,
 		const FNodeCodeGraphIR& NewIR);
 
 	static void MatchNodes(

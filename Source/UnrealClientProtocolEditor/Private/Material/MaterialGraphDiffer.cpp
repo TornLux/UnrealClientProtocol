@@ -3,7 +3,9 @@
 #include "Material/MaterialGraphDiffer.h"
 #include "Material/MaterialExpressionClassCache.h"
 #include "Material/MaterialGraphSerializer.h"
+#include "Material/IMaterialPropertyHandler.h"
 #include "NodeCode/NodeCodeTextFormat.h"
+#include "NodeCode/NodeCodePropertyUtils.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
@@ -23,7 +25,7 @@
 #include "MaterialGraph/MaterialGraph.h"
 #include "MaterialGraph/MaterialGraphNode.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUCP, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogUCPMaterial, Log, All);
 
 struct FMatLink
 {
@@ -41,33 +43,86 @@ struct FMatLink
 	}
 };
 
-// ---- Diff & Apply ----
+// ---- Entry Points ----
 
-FNodeCodeDiffResult FMaterialGraphDiffer::Apply(UMaterial* Material, const FString& ScopeName, const FString& GraphText)
+FNodeCodeDiffResult FMaterialGraphDiffer::ApplyMaterial(UMaterial* Material, const FNodeCodeGraphIR& NewIR)
 {
 	if (!Material)
 	{
-		FNodeCodeDiffResult R;
-		UE_LOG(LogUCP, Error, TEXT("WriteGraph: Material is null"));
-		return R;
+		UE_LOG(LogUCPMaterial, Error, TEXT("ApplyMaterial: Material is null"));
+		return {};
 	}
-
-	FNodeCodeGraphIR NewIR = FNodeCodeTextFormat::ParseText(GraphText);
-	return DiffAndApply(Material, nullptr, ScopeName, NewIR);
+	return DiffAndApply(Material, nullptr, FString(), NewIR);
 }
 
-FNodeCodeDiffResult FMaterialGraphDiffer::Apply(UMaterialFunction* MaterialFunction, const FString& ScopeName, const FString& GraphText)
+FNodeCodeDiffResult FMaterialGraphDiffer::ApplyComposite(UMaterial* Material, const FString& CompositeName, const FNodeCodeGraphIR& NewIR)
+{
+	if (!Material)
+	{
+		UE_LOG(LogUCPMaterial, Error, TEXT("ApplyComposite: Material is null"));
+		return {};
+	}
+	return DiffAndApply(Material, nullptr, CompositeName, NewIR);
+}
+
+FNodeCodeDiffResult FMaterialGraphDiffer::ApplyFunction(UMaterialFunction* MaterialFunction, const FNodeCodeGraphIR& NewIR)
 {
 	if (!MaterialFunction)
 	{
-		FNodeCodeDiffResult R;
-		UE_LOG(LogUCP, Error, TEXT("WriteGraph: MaterialFunction is null"));
-		return R;
+		UE_LOG(LogUCPMaterial, Error, TEXT("ApplyFunction: MaterialFunction is null"));
+		return {};
+	}
+	return DiffAndApply(nullptr, MaterialFunction, FString(), NewIR);
+}
+
+FNodeCodeDiffResult FMaterialGraphDiffer::ApplyMaterialProperties(UMaterial* Material, const TMap<FString, FString>& Properties)
+{
+	FNodeCodeDiffResult Result;
+	if (!Material)
+	{
+		return Result;
 	}
 
-	FNodeCodeGraphIR NewIR = FNodeCodeTextFormat::ParseText(GraphText);
-	return DiffAndApply(nullptr, MaterialFunction, ScopeName, NewIR);
+	FScopedTransaction Transaction(NSLOCTEXT("UCPMaterialGraph", "WriteProperties", "UCP: Write Material Properties"));
+
+	UClass* MatClass = Material->GetClass();
+	Material->PreEditChange(nullptr);
+
+	for (const auto& Pair : Properties)
+	{
+		FProperty* Prop = MatClass->FindPropertyByName(FName(*Pair.Key));
+		if (!Prop)
+		{
+			Result.NodesModified.Add(FString::Printf(TEXT("Property not found: %s"), *Pair.Key));
+			continue;
+		}
+
+		void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Material);
+		FString ImportValue = Pair.Value;
+		if (ImportValue.StartsWith(TEXT("\"")) && ImportValue.EndsWith(TEXT("\"")))
+		{
+			ImportValue = ImportValue.Mid(1, ImportValue.Len() - 2);
+			ImportValue = ImportValue.ReplaceEscapedCharWithChar();
+		}
+
+		const TCHAR* Buffer = *ImportValue;
+		if (Prop->ImportText_Direct(Buffer, ValuePtr, Material, PPF_None))
+		{
+			Result.NodesModified.Add(FString::Printf(TEXT("%s = %s"), *Pair.Key, *Pair.Value));
+		}
+		else
+		{
+			Result.NodesModified.Add(FString::Printf(TEXT("Failed to set %s"), *Pair.Key));
+		}
+	}
+
+	FPropertyChangedEvent ChangedEvent(nullptr);
+	Material->PostEditChangeProperty(ChangedEvent);
+
+	return Result;
 }
+
+// ---- Node Matching ----
 
 void FMaterialGraphDiffer::MatchNodes(
 	const FNodeCodeGraphIR& OldIR,
@@ -85,24 +140,7 @@ void FMaterialGraphDiffer::MatchNodes(
 
 	TSet<int32> MatchedOld;
 
-	auto GetKeyProp = [](const FNodeCodeNodeIR& N) -> FString
-	{
-		if (const FString* Val = N.Properties.Find(TEXT("ParameterName")))
-		{
-			return *Val;
-		}
-		if (const FString* Val = N.Properties.Find(TEXT("Texture")))
-		{
-			return *Val;
-		}
-		if (const FString* Val = N.Properties.Find(TEXT("MaterialFunction")))
-		{
-			return *Val;
-		}
-		return FString();
-	};
-
-	// Pass 1: Match by Guid
+	// Pass 1: GUID
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
 		const FNodeCodeNodeIR& NewNode = NewIR.Nodes[NewIdx];
@@ -119,7 +157,7 @@ void FMaterialGraphDiffer::MatchNodes(
 		}
 	}
 
-	// Pass 2: Match by ClassName + KeyProp
+	// Pass 2: ClassName + Properties fingerprint
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
 		if (OutNewToOld.Contains(NewIdx))
@@ -128,11 +166,6 @@ void FMaterialGraphDiffer::MatchNodes(
 		}
 
 		const FNodeCodeNodeIR& NewNode = NewIR.Nodes[NewIdx];
-		FString NewKey = GetKeyProp(NewNode);
-		if (NewKey.IsEmpty())
-		{
-			continue;
-		}
 
 		for (int32 OldIdx = 0; OldIdx < OldIR.Nodes.Num(); ++OldIdx)
 		{
@@ -142,7 +175,23 @@ void FMaterialGraphDiffer::MatchNodes(
 			}
 
 			const FNodeCodeNodeIR& OldNode = OldIR.Nodes[OldIdx];
-			if (OldNode.ClassName == NewNode.ClassName && GetKeyProp(OldNode) == NewKey)
+			if (OldNode.ClassName != NewNode.ClassName)
+			{
+				continue;
+			}
+
+			bool bPropsMatch = true;
+			for (const auto& Pair : NewNode.Properties)
+			{
+				const FString* OldVal = OldNode.Properties.Find(Pair.Key);
+				if (OldVal && *OldVal != Pair.Value)
+				{
+					bPropsMatch = false;
+					break;
+				}
+			}
+
+			if (bPropsMatch)
 			{
 				OutNewToOld.Add(NewIdx, OldIdx);
 				MatchedOld.Add(OldIdx);
@@ -151,7 +200,7 @@ void FMaterialGraphDiffer::MatchNodes(
 		}
 	}
 
-	// Pass 3: Match remaining by ClassName alone
+	// Pass 3: ClassName alone
 	TMultiMap<FString, int32> UnmatchedOldByClass;
 	for (int32 OldIdx = 0; OldIdx < OldIR.Nodes.Num(); ++OldIdx)
 	{
@@ -180,144 +229,20 @@ void FMaterialGraphDiffer::MatchNodes(
 	}
 }
 
+// ---- Apply Properties ----
+
 void FMaterialGraphDiffer::ApplyPropertyChanges(
 	UMaterialExpression* Expression,
 	const TMap<FString, FString>& NewProperties,
 	TArray<FString>& OutChanges)
 {
+	FMaterialPropertyHandlerRegistry::Get().ApplySpecial(Expression, NewProperties, OutChanges);
+
 	UClass* ExprClass = Expression->GetClass();
-
-	if (UMaterialExpressionCustom* CustomExpr = Cast<UMaterialExpressionCustom>(Expression))
-	{
-		if (const FString* InputNamesStr = NewProperties.Find(TEXT("InputNames")))
-		{
-			FString Working = *InputNamesStr;
-			Working.TrimStartAndEndInline();
-			if (Working.StartsWith(TEXT("[")) && Working.EndsWith(TEXT("]")))
-			{
-				Working = Working.Mid(1, Working.Len() - 2);
-			}
-
-			TArray<FString> Names;
-			Working.ParseIntoArray(Names, TEXT(","));
-
-			CustomExpr->Inputs.Empty();
-			for (FString& Name : Names)
-			{
-				Name.TrimStartAndEndInline();
-				if (Name.StartsWith(TEXT("\"")) && Name.EndsWith(TEXT("\"")))
-				{
-					Name = Name.Mid(1, Name.Len() - 2);
-				}
-				FCustomInput NewInput;
-				NewInput.InputName = FName(*Name);
-				CustomExpr->Inputs.Add(MoveTemp(NewInput));
-			}
-
-			if (CustomExpr->Inputs.Num() == 0)
-			{
-				FCustomInput DefaultInput;
-				DefaultInput.InputName = NAME_None;
-				CustomExpr->Inputs.Add(MoveTemp(DefaultInput));
-			}
-
-			CustomExpr->RebuildOutputs();
-			OutChanges.Add(FString::Printf(TEXT("InputNames: %d inputs"), CustomExpr->Inputs.Num()));
-		}
-	}
-
-	if (UMaterialExpressionSwitch* SwitchExpr = Cast<UMaterialExpressionSwitch>(Expression))
-	{
-		if (const FString* SwitchNamesStr = NewProperties.Find(TEXT("SwitchInputNames")))
-		{
-			FString Working = *SwitchNamesStr;
-			Working.TrimStartAndEndInline();
-			if (Working.StartsWith(TEXT("[")) && Working.EndsWith(TEXT("]")))
-			{
-				Working = Working.Mid(1, Working.Len() - 2);
-			}
-
-			TArray<FString> Names;
-			Working.ParseIntoArray(Names, TEXT(","));
-
-			SwitchExpr->Inputs.Empty();
-			for (FString& Name : Names)
-			{
-				Name.TrimStartAndEndInline();
-				if (Name.StartsWith(TEXT("\"")) && Name.EndsWith(TEXT("\"")))
-				{
-					Name = Name.Mid(1, Name.Len() - 2);
-				}
-				FSwitchCustomInput NewInput;
-				NewInput.InputName = FName(*Name);
-				SwitchExpr->Inputs.Add(MoveTemp(NewInput));
-			}
-
-			OutChanges.Add(FString::Printf(TEXT("SwitchInputNames: %d cases"), SwitchExpr->Inputs.Num()));
-		}
-	}
-
-	if (UMaterialExpressionSetMaterialAttributes* SetAttrExpr = Cast<UMaterialExpressionSetMaterialAttributes>(Expression))
-	{
-		if (const FString* AttrsStr = NewProperties.Find(TEXT("Attributes")))
-		{
-			FString Working = *AttrsStr;
-			Working.TrimStartAndEndInline();
-			if (Working.StartsWith(TEXT("[")) && Working.EndsWith(TEXT("]")))
-			{
-				Working = Working.Mid(1, Working.Len() - 2);
-			}
-
-			TArray<FString> AttrNames;
-			Working.ParseIntoArray(AttrNames, TEXT(","));
-
-			SetAttrExpr->AttributeSetTypes.Empty();
-			SetAttrExpr->Inputs.Empty();
-			SetAttrExpr->Inputs.Add(FExpressionInput());
-
-			for (FString& AttrName : AttrNames)
-			{
-				AttrName.TrimStartAndEndInline();
-				if (AttrName.StartsWith(TEXT("\"")) && AttrName.EndsWith(TEXT("\"")))
-				{
-					AttrName = AttrName.Mid(1, AttrName.Len() - 2);
-				}
-
-				FGuid AttrGuid;
-				for (int32 i = 0; i < MP_MAX; ++i)
-				{
-					EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
-					const FString& Name = FMaterialAttributeDefinitionMap::GetAttributeName(Prop);
-					if (Name == AttrName)
-					{
-						AttrGuid = FMaterialAttributeDefinitionMap::GetID(Prop);
-						break;
-					}
-				}
-
-				if (!AttrGuid.IsValid())
-				{
-					AttrGuid = FMaterialAttributeDefinitionMap::GetCustomAttributeID(AttrName);
-				}
-
-				if (AttrGuid.IsValid())
-				{
-					SetAttrExpr->AttributeSetTypes.Add(AttrGuid);
-					SetAttrExpr->Inputs.Add(FExpressionInput());
-				}
-				else
-				{
-					OutChanges.Add(FString::Printf(TEXT("Unknown attribute: %s"), *AttrName));
-				}
-			}
-
-			OutChanges.Add(FString::Printf(TEXT("Attributes: %d attributes"), SetAttrExpr->AttributeSetTypes.Num()));
-		}
-	}
 
 	for (const auto& Pair : NewProperties)
 	{
-		if (Pair.Key == TEXT("InputNames") || Pair.Key == TEXT("SwitchInputNames") || Pair.Key == TEXT("Attributes"))
+		if (FMaterialPropertyHandlerRegistry::Get().IsHandledKey(Expression, Pair.Key))
 		{
 			continue;
 		}
@@ -374,10 +299,12 @@ EMaterialProperty FMaterialGraphDiffer::FindMaterialPropertyByName(UMaterial* Ma
 	return MP_MAX;
 }
 
+// ---- Diff & Apply ----
+
 FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 	UMaterial* Material,
 	UMaterialFunction* MaterialFunction,
-	const FString& ScopeName,
+	const FString& CompositeName,
 	const FNodeCodeGraphIR& NewIR)
 {
 	FNodeCodeDiffResult Result;
@@ -387,11 +314,18 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 	FNodeCodeGraphIR OldIR;
 	if (Material)
 	{
-		OldIR = FMaterialGraphSerializer::BuildIR(Material, ScopeName);
+		if (CompositeName.IsEmpty())
+		{
+			OldIR = FMaterialGraphSerializer::BuildIR(Material);
+		}
+		else
+		{
+			OldIR = FMaterialGraphSerializer::BuildCompositeIR(Material, CompositeName);
+		}
 	}
 	else if (MaterialFunction)
 	{
-		OldIR = FMaterialGraphSerializer::BuildIR(MaterialFunction, ScopeName);
+		OldIR = FMaterialGraphSerializer::BuildIR(MaterialFunction);
 	}
 
 	TMap<int32, int32> NewToOld;
@@ -405,7 +339,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 
 	FScopedTransaction Transaction(NSLOCTEXT("UCPMaterialGraph", "WriteGraph", "UCP: Write Material Graph"));
 
-	// Phase 1: Delete removed nodes
+	// Phase 1: Delete
 	for (int32 OldIdx = 0; OldIdx < OldIR.Nodes.Num(); ++OldIdx)
 	{
 		if (MatchedOldIndices.Contains(OldIdx))
@@ -429,7 +363,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	// Phase 2: Create new nodes and map NewIndex -> Expression
+	// Phase 2: Create
 	TMap<int32, UMaterialExpression*> NewIndexToExpr;
 
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
@@ -445,7 +379,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			UClass* ExprClass = FMaterialExpressionClassCache::Get().FindClass(NewNode.ClassName);
 			if (!ExprClass)
 			{
-				UE_LOG(LogUCP, Error, TEXT("WriteGraph: Unknown expression class: %s"), *NewNode.ClassName);
+				UE_LOG(LogUCPMaterial, Error, TEXT("WriteGraph: Unknown expression class: %s"), *NewNode.ClassName);
 				continue;
 			}
 
@@ -461,7 +395,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 
 			if (!NewExpr)
 			{
-				UE_LOG(LogUCP, Error, TEXT("WriteGraph: Failed to create expression: %s"), *NewNode.ClassName);
+				UE_LOG(LogUCPMaterial, Error, TEXT("WriteGraph: Failed to create expression: %s"), *NewNode.ClassName);
 				continue;
 			}
 
@@ -473,7 +407,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	// Phase 3: Modify properties on matched nodes
+	// Phase 3: Update properties
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
 		int32* OldIdx = NewToOld.Find(NewIdx);
@@ -523,8 +457,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	// Phase 4+5: Incremental connection diff
-	// Helper lambdas for pin resolution
+	// Phase 4+5: Connection diff
 	auto FindInputIndexByName = [](UMaterialExpression* Expr, const FString& InputName) -> int32
 	{
 		if (InputName.IsEmpty())
@@ -535,10 +468,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		for (int32 i = 0; ; ++i)
 		{
 			FExpressionInput* Input = Expr->GetInput(i);
-			if (!Input)
-			{
-				break;
-			}
+			if (!Input) break;
 			if (Expr->GetInputName(i).ToString() == InputName)
 			{
 				return i;
@@ -549,20 +479,13 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		for (TFieldIterator<FStructProperty> PropIt(ExprClass); PropIt; ++PropIt)
 		{
 			FStructProperty* StructProp = *PropIt;
-			if (!StructProp || !StructProp->Struct)
-			{
-				continue;
-			}
+			if (!StructProp || !StructProp->Struct) continue;
 
 			const UStruct* Current = StructProp->Struct;
 			bool bIsInput = false;
 			while (Current)
 			{
-				if (Current->GetFName() == NAME_ExpressionInput)
-				{
-					bIsInput = true;
-					break;
-				}
+				if (Current->GetFName() == NAME_ExpressionInput) { bIsInput = true; break; }
 				Current = Current->GetSuperStruct();
 			}
 
@@ -572,14 +495,8 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 				for (int32 i = 0; ; ++i)
 				{
 					FExpressionInput* Input = Expr->GetInput(i);
-					if (!Input)
-					{
-						break;
-					}
-					if (Input == InputPtr)
-					{
-						return i;
-					}
+					if (!Input) break;
+					if (Input == InputPtr) return i;
 				}
 			}
 		}
@@ -589,20 +506,13 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 
 	auto FindOutputIndexByName = [](UMaterialExpression* Expr, const FString& OutputName) -> int32
 	{
-		if (OutputName.IsEmpty())
-		{
-			return 0;
-		}
+		if (OutputName.IsEmpty()) return 0;
 
 		TArray<FExpressionOutput>& Outputs = Expr->GetOutputs();
 		for (int32 i = 0; i < Outputs.Num(); ++i)
 		{
 			const FExpressionOutput& Output = Outputs[i];
-			if (!Output.OutputName.IsNone() && Output.OutputName.ToString() == OutputName)
-			{
-				return i;
-			}
-
+			if (!Output.OutputName.IsNone() && Output.OutputName.ToString() == OutputName) return i;
 			if (Output.MaskR && !Output.MaskG && !Output.MaskB && !Output.MaskA && OutputName == TEXT("R")) return i;
 			if (!Output.MaskR && Output.MaskG && !Output.MaskB && !Output.MaskA && OutputName == TEXT("G")) return i;
 			if (!Output.MaskR && !Output.MaskG && Output.MaskB && !Output.MaskA && OutputName == TEXT("B")) return i;
@@ -610,11 +520,9 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			if (Output.MaskR && Output.MaskG && Output.MaskB && !Output.MaskA && OutputName == TEXT("RGB")) return i;
 			if (Output.MaskR && Output.MaskG && Output.MaskB && Output.MaskA && OutputName == TEXT("RGBA")) return i;
 		}
-
 		return INDEX_NONE;
 	};
 
-	// Build desired link set from NewIR
 	TSet<FMatLink> DesiredLinks;
 	TArray<FMatLink> LinksToCreate;
 
@@ -623,14 +531,14 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		UMaterialExpression** FromExprPtr = NewIndexToExpr.Find(Link.FromNodeIndex);
 		if (!FromExprPtr || !*FromExprPtr)
 		{
-			UE_LOG(LogUCP, Warning, TEXT("WriteGraph: Link source N%d not found"), Link.FromNodeIndex);
+			UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Link source N%d not found"), Link.FromNodeIndex);
 			continue;
 		}
 
 		int32 FromOutputIndex = FindOutputIndexByName(*FromExprPtr, Link.FromOutputName);
 		if (FromOutputIndex == INDEX_NONE)
 		{
-			UE_LOG(LogUCP, Warning, TEXT("WriteGraph: Output '%s' not found on N%d"), *Link.FromOutputName, Link.FromNodeIndex);
+			UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Output '%s' not found on N%d"), *Link.FromOutputName, Link.FromNodeIndex);
 			continue;
 		}
 
@@ -645,7 +553,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			}
 			else
 			{
-				UE_LOG(LogUCP, Warning, TEXT("WriteGraph: Unknown material output: %s"), *Link.ToInputName);
+				UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Unknown material output: %s"), *Link.ToInputName);
 			}
 		}
 		else if (!Link.bToGraphOutput)
@@ -653,7 +561,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			UMaterialExpression** ToExprPtr = NewIndexToExpr.Find(Link.ToNodeIndex);
 			if (!ToExprPtr || !*ToExprPtr)
 			{
-				UE_LOG(LogUCP, Warning, TEXT("WriteGraph: Link target N%d not found"), Link.ToNodeIndex);
+				UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Link target N%d not found"), Link.ToNodeIndex);
 				continue;
 			}
 
@@ -668,7 +576,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 					if (!AvailableInputs.IsEmpty()) AvailableInputs += TEXT(", ");
 					AvailableInputs += (*ToExprPtr)->GetInputName(DbgIdx).ToString();
 				}
-				UE_LOG(LogUCP, Warning, TEXT("WriteGraph: Input '%s' not found on N%d (%s). Available: [%s]"),
+				UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Input '%s' not found on N%d (%s). Available: [%s]"),
 					*Link.ToInputName, Link.ToNodeIndex, *(*ToExprPtr)->GetClass()->GetName(), *AvailableInputs);
 				continue;
 			}
@@ -676,10 +584,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			TargetInput = (*ToExprPtr)->GetInput(ToInputIndex);
 		}
 
-		if (!TargetInput)
-		{
-			continue;
-		}
+		if (!TargetInput) continue;
 
 		FMatLink Desired;
 		Desired.FromExpr = *FromExprPtr;
@@ -694,31 +599,20 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	// Collect all live input slots on in-scope nodes + material outputs pointing to in-scope nodes
-	// Remove connections that are not in the desired set
 	TSet<UMaterialExpression*> ScopeExprSet;
 	for (auto& Pair : NewIndexToExpr)
 	{
-		if (Pair.Value)
-		{
-			ScopeExprSet.Add(Pair.Value);
-		}
+		if (Pair.Value) ScopeExprSet.Add(Pair.Value);
 	}
 
 	for (auto& Pair : NewIndexToExpr)
 	{
 		UMaterialExpression* Expr = Pair.Value;
-		if (!Expr)
-		{
-			continue;
-		}
+		if (!Expr) continue;
 
 		for (FExpressionInputIterator It(Expr); It; ++It)
 		{
-			if (!It->Expression || !ScopeExprSet.Contains(It->Expression))
-			{
-				continue;
-			}
+			if (!It->Expression || !ScopeExprSet.Contains(It->Expression)) continue;
 
 			FMatLink Live;
 			Live.FromExpr = It->Expression;
@@ -733,16 +627,13 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	if (Material)
+	if (Material && CompositeName.IsEmpty())
 	{
 		for (int32 i = 0; i < MP_MAX; ++i)
 		{
 			EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
 			FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
-			if (!Input || !Input->Expression || !ScopeExprSet.Contains(Input->Expression))
-			{
-				continue;
-			}
+			if (!Input || !Input->Expression || !ScopeExprSet.Contains(Input->Expression)) continue;
 
 			FMatLink Live;
 			Live.FromExpr = Input->Expression;
@@ -758,7 +649,6 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		}
 	}
 
-	// Create new links
 	for (const FMatLink& Link : LinksToCreate)
 	{
 		Link.FromExpr->ConnectExpression(Link.ToInput, Link.OutputIndex);
@@ -767,7 +657,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			Link.OutputIndex));
 	}
 
-	// Phase 6: Clean orphaned nodes, relayout, recompile and refresh editor UI
+	// Phase 6: Post-apply
 	if (Material)
 	{
 		if (Material->MaterialGraph)
@@ -782,10 +672,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			for (UEdGraphNode* Node : UnusedNodes)
 			{
 				UMaterialGraphNode* GraphNode = Cast<UMaterialGraphNode>(Node);
-				if (!GraphNode || !GraphNode->MaterialExpression)
-				{
-					continue;
-				}
+				if (!GraphNode || !GraphNode->MaterialExpression) continue;
 				Result.NodesRemoved.Add(FString::Printf(TEXT("(orphaned) %s"),
 					*FMaterialExpressionClassCache::Get().GetSerializableName(GraphNode->MaterialExpression->GetClass())));
 				UMaterialExpression* Expr = GraphNode->MaterialExpression;
@@ -810,7 +697,9 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 
 		if (GEditor)
 		{
-			if (IAssetEditorInstance* EditorInstance = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(Material, false))
+			UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+			IAssetEditorInstance* EditorInstance = AssetEditorSubsystem ? AssetEditorSubsystem->FindEditorForAsset(Material, false) : nullptr;
+			if (EditorInstance)
 			{
 				IMaterialEditor* MaterialEditor = static_cast<IMaterialEditor*>(EditorInstance);
 				UMaterialInterface* EditorMaterial = MaterialEditor->GetMaterialInterface();

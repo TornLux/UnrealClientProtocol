@@ -1,87 +1,82 @@
-# NodeCode Architecture
+# NodeCode V2 Architecture
 
-NodeCode is a text-based intermediate representation (IR) for Unreal Engine node graphs. It converts visual node graphs into a concise, human-readable text format that AI agents can understand, reason about, and modify — then writes the changes back to the live graph.
+NodeCode is a text-based intermediate representation (IR) for Unreal Engine node graphs. It converts visual node graphs into a concise, human-readable text format that AI agents can understand, reason about, and modify — then writes the changes back to the live graph via incremental diff.
+
+## API
+
+CDO: `/Script/UnrealClientProtocolEditor.Default__NodeCodeEditingLibrary`
+
+| Function | Params | Description |
+|----------|--------|-------------|
+| `Outline` | `AssetPath` | Returns all Section headers for the asset |
+| `ReadGraph` | `AssetPath`, `Section` (optional) | Returns text. Empty Section = all Sections. |
+| `WriteGraph` | `AssetPath`, `Section`, `GraphText` | Overwrite Section content. Empty GraphText = delete Section. |
+
+Semantics: **read a range, write a range, overwrite within that range, leave everything else untouched.**
+
+## Text Format
+
+### Section Headers
+
+```
+[Type:Name]    — named (Function:Foo, Composite:Bar)
+[Type]         — singleton (Material, EventGraph, AnimGraph)
+```
+
+Type routes to the appropriate handler. Current types:
+
+| Type | Asset | Description |
+|------|-------|-------------|
+| `EventGraph` | Blueprint | Main event graph or named ubergraph page |
+| `Function` | Blueprint | Function graph |
+| `Macro` | Blueprint | Macro graph |
+| `Variables` | Blueprint | Variable definitions (data section) |
+| `Material` | Material | Complete main material graph |
+| `Composite` | Material | Composite subgraph |
+| `Properties` | Material | Material properties (ShadingModel, BlendMode, etc.) |
+
+### Node Lines
+
+```
+N<idx> <ClassName> {Key:Value, Key:Value} #<guid>
+```
+
+- Properties in `{...}`, single line
+- Values are loose JSON: parsed as JSON first, fallback to UE ImportText
+- GUID preserved for existing nodes, omitted for new nodes
+
+### Connection Lines
+
+```
+  > OutputPin -> N<target>.InputPin
+  > OutputPin -> [GraphOutput]
+  > -> N<target>.InputPin              (omit OutputPin = single-output node)
+```
+
+Output direction only (`>`), indented under the owning node.
+
+### Properties / Variables Sections
+
+```
+[Properties]
+ShadingModel: MSM_DefaultLit
+BlendMode: BLEND_Opaque
+TwoSided: true
+
+[Variables]
+Health: {"PinCategory":"real", "PinSubCategory":"double", "DefaultValue":"100.0"}
+bIsAlive: {"PinCategory":"bool", "DefaultValue":"true"}
+```
+
+`key: value` format, one per line. Values are loose JSON.
+
+Variables use `FEdGraphPinType` reflection fields directly (`PinCategory`, `PinSubCategory`, `PinSubCategoryObject`, `ContainerType`).
 
 ## Data Flow
 
 ```
-Read:   UE Graph Object ──→ BuildIR ──→ FNodeCodeGraphIR ──→ IRToText ──→ Text (to AI)
-Write:  Text (from AI) ──→ ParseText ──→ FNodeCodeGraphIR ──→ DiffAndApply ──→ UE Graph Object
-```
-
-### Read Path
-
-```
-┌─────────────────┐     ┌──────────────────────────────────────────────┐     ┌──────────────┐
-│  UE Graph Object│     │              BuildIR                         │     │  IRToText    │
-│  (Material /    │────→│  1. Resolve scope (find target graph/nodes)  │────→│  (shared)    │────→ Text
-│   Blueprint)    │     │  2. Collect nodes (skip comments, reroutes)  │     │              │
-│                 │     │  3. Serialize node properties                │     │  Topo-sort   │
-│                 │     │  4. Trace connections (resolve reroutes)     │     │  nodes by    │
-│                 │     │  5. Build FNodeCodeGraphIR                   │     │  depth       │
-└─────────────────┘     └──────────────────────────────────────────────┘     └──────────────┘
-```
-
-### Write Path (DiffAndApply)
-
-```
-Text ──→ ParseText ──→ NewIR
-                         │
-                         ▼
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                           DiffAndApply                                           │
-│                                                                                  │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │ Phase 0: Build OldIR from live graph (same BuildIR as read path)           │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                              │                                                   │
-│                              ▼                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │ Phase 1: MatchNodes — pair OldIR nodes with NewIR nodes                    │ │
-│  │   Pass 1: by GUID (stable identity)                                        │ │
-│  │   Pass 2: by ClassName + key property (ParameterName, Function, etc.)      │ │
-│  │   Pass 3: by ClassName alone (reuse orphaned nodes)                        │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                              │                                                   │
-│                              ▼                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │ Phase 2: Delete — remove unmatched old nodes from the live graph           │ │
-│  │   (protected nodes like FunctionEntry/FunctionResult are preserved)         │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                              │                                                   │
-│                              ▼                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │ Phase 3: Create — instantiate new nodes for unmatched NewIR entries        │ │
-│  │   Build NewIndex → LiveNode map (matched + newly created)                  │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                              │                                                   │
-│                              ▼                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │ Phase 4: Update Properties — apply property/pin-default changes on         │ │
-│  │   matched nodes (skip if properties identical)                             │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                              │                                                   │
-│                              ▼                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │ Phase 5+6: Incremental Connection Diff                                     │ │
-│  │   1. Resolve NewIR links to live pin/input pointers → DesiredLinks set     │ │
-│  │   2. For each live link between in-scope nodes:                            │ │
-│  │      - If NOT in DesiredLinks → break it (stale)                           │ │
-│  │      - If in DesiredLinks → keep it (unchanged)                            │ │
-│  │   3. For each DesiredLink not already connected → create it                │ │
-│  │   External links (to out-of-scope nodes) are never touched.               │ │
-│  │   Material: ConnectExpression / direct FExpressionInput assignment         │ │
-│  │   Blueprint: Schema->TryCreateConnection / MakeLinkTo                     │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                              │                                                   │
-│                              ▼                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │ Phase 7: Post-Apply (graph-type specific)                                  │ │
-│  │   Material: RebuildGraph, remove orphans, relayout, recompile, refresh UI  │ │
-│  │   Blueprint: MarkBlueprintAsStructurallyModified (triggers recompile)      │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────┘
+Read:   UE Asset ──→ SectionHandler.Read() ──→ FNodeCodeSectionIR ──→ DocumentToText ──→ Text
+Write:  Text ──→ ParseDocument ──→ FNodeCodeDocumentIR ──→ SectionHandler.Write() ──→ UE Asset
 ```
 
 ## IR Structures
@@ -92,202 +87,112 @@ Defined in `Private/NodeCode/NodeCodeTypes.h`:
 |--------|--------|-------------|
 | `FNodeCodeNodeIR` | Index, ClassName, Guid, Properties, SourceObject | A single node |
 | `FNodeCodeLinkIR` | FromNodeIndex, FromOutputName, ToNodeIndex, ToInputName, bToGraphOutput | A connection |
-| `FNodeCodeGraphIR` | Nodes, Links, ScopeName | A complete graph scope |
-| `FNodeCodeDiffResult` | NodesAdded, NodesRemoved, NodesModified, LinksAdded, LinksRemoved | Write operation result |
+| `FNodeCodeGraphIR` | Nodes, Links | A complete node graph |
+| `FNodeCodeSectionIR` | Type, Name, Graph, Properties | A document section (graph or data) |
+| `FNodeCodeDocumentIR` | Sections | Multi-section document |
+| `FNodeCodeDiffResult` | NodesAdded/Removed/Modified, LinksAdded/Removed | Write result |
 
-### Node IR
+## Architecture
 
-- `Index`: local reference ID (N0, N1, ...), 0-based
-- `ClassName`: identifies the node type (graph-specific encoding)
-- `Guid`: 32-hex GUID for stable identity across read/write cycles
-- `Properties`: key-value map of non-default properties
-- `SourceObject`: live UObject pointer (only valid during BuildIR, nullptr after ParseText)
+### Handler Interface
 
-### Link IR
-
-- `FromNodeIndex` / `ToNodeIndex`: reference by node Index
-- `FromOutputName` / `ToInputName`: pin names
-- `bToGraphOutput`: true when the link targets a graph-level output (e.g. material BaseColor pin)
-
-## Text Format
-
-```
-=== scope: <ScopeName> ===
-
-=== nodes ===
-N<idx> <ClassName> {Key:Value, Key:Value} #<guid>
-N<idx> <ClassName> #<guid>
-
-=== links ===
-N<from>[.OutputPin] -> N<to>.InputPin
-N<from>[.OutputPin] -> [GraphOutput]
+```cpp
+class INodeCodeSectionHandler
+{
+    virtual bool CanHandle(UObject* Asset, const FString& Type) const = 0;
+    virtual TArray<FNodeCodeSectionIR> ListSections(UObject* Asset) = 0;
+    virtual FNodeCodeSectionIR Read(UObject* Asset, const FString& Type, const FString& Name) = 0;
+    virtual FNodeCodeDiffResult Write(UObject* Asset, const FNodeCodeSectionIR& Section) = 0;
+    virtual bool CreateSection(UObject* Asset, const FString& Type, const FString& Name) = 0;
+    virtual bool RemoveSection(UObject* Asset, const FString& Type, const FString& Name) = 0;
+};
 ```
 
-### Sections
+Implementations:
+- `FBlueprintSectionHandler` — EventGraph / Function / Macro / Variables
+- `FMaterialSectionHandler` — Material / Composite / Properties
 
-- `=== scope: ... ===` — optional, identifies which sub-scope of the graph
-- `=== nodes ===` — node definitions, sorted by topological depth
-- `=== links ===` — connections between nodes
+Handlers register to `FNodeCodeSectionHandlerRegistry`. The unified `UNodeCodeEditingLibrary` dispatches by asset type + section type.
 
-### Node Line
-
-```
-N<index> <ClassName> {Key:Value, ...} #<guid>
-```
-
-- Braces `{}` omitted if no non-default properties
-- GUID `#...` preserved for existing nodes, omitted for new nodes
-- Property values: `"string"`, `0.5`, `true`, `(R=1.0,G=0.5,B=0.0,A=1.0)`, `"/Game/Path"`
-
-### Link Line
+### WriteGraph Flow
 
 ```
-N<from>.OutputName -> N<to>.InputName
-N<from> -> N<to>.InputName
-N<from>.OutputName -> [GraphOutputName]
+1. Parse GraphText → FNodeCodeDocumentIR
+2. If Section param is non-empty, validate text matches that section
+3. For each section:
+   a. Find handler
+   b. Section doesn't exist → handler.CreateSection()
+   c. handler.Write() → internal incremental diff (BuildIR → MatchNodes → Delete/Create/Update/DiffLinks)
+4. If GraphText is empty and Section is non-empty → handler.RemoveSection()
+5. Entire operation wrapped in FScopedTransaction
 ```
 
-- Output name omitted when the node has a single output
-- `[...]` syntax for graph-level outputs (material properties, etc.)
+### Node Matching Strategy
 
-## Shared Utilities
+Three-pass matching (shared by Blueprint and Material):
 
-| File | Description |
-|------|-------------|
-| `NodeCodeTypes.h` | IR struct definitions |
-| `NodeCodeTextFormat.h/.cpp` | `IRToText`, `ParseText`, `DiffResultToJson` |
-| `NodeCodePropertyUtils.h/.cpp` | `FormatPropertyValue`, `ShouldSkipProperty` |
-| `NodeCodeClassCache.h/.cpp` | Generic class name cache (parameterized by base class) |
+1. **GUID match** — exact, most reliable
+2. **ClassName + Properties fingerprint** — uses all serialized properties as auxiliary fingerprint
+3. **ClassName alone** — last resort, pairs by order
 
-## Diff/Apply Flow
+**GUID is the only reliable identity.** Losing GUIDs on same-type multi-node scenarios causes unreliable matching.
 
-The write path follows a consistent 8-phase pattern across all graph types:
+### Blueprint Node Encoding
 
-| Phase | Action | Details |
-|-------|--------|---------|
-| 0 | **Build OldIR** | Serialize the live graph into IR (same `BuildIR` as read path) |
-| 1 | **Match nodes** | Pair old/new by GUID → key property → class name |
-| 2 | **Delete** | Remove unmatched old nodes (protected nodes preserved) |
-| 3 | **Create** | Instantiate unmatched new nodes, build index→node map |
-| 4 | **Update properties** | Apply property/pin-default changes on matched nodes |
-| 5 | **Remove stale connections** | Incremental diff: break only links that exist in live graph but not in NewIR (between in-scope nodes only; external links preserved) |
-| 6 | **Create new connections** | Incremental diff: create only links that exist in NewIR but not in live graph |
-| 7 | **Post-apply** | Graph-specific cleanup: recompile, relayout, refresh UI |
+`IBlueprintNodeEncoder` registry (internal to Blueprint handler):
 
-## Supported Graph Types
+| Text Format | UE Node Type |
+|-------------|-------------|
+| `CallFunction:<Class>.<Func>` | `UK2Node_CallFunction` (external) |
+| `CallFunction:<Func>` | `UK2Node_CallFunction` (self) |
+| `VariableGet:<Var>` | `UK2Node_VariableGet` |
+| `VariableSet:<Var>` | `UK2Node_VariableSet` |
+| `CustomEvent:<Name>` | `UK2Node_CustomEvent` |
+| `Event:<Name>` | `UK2Node_Event` |
+| `FunctionEntry` | `UK2Node_FunctionEntry` (protected) |
+| `FunctionResult` | `UK2Node_FunctionResult` (protected) |
 
-### Material Graph
+Other node types use their raw UE class name (e.g. `K2Node_IfThenElse`).
 
-**Files:** `Private/Material/MaterialGraphSerializer.h/.cpp`, `MaterialGraphDiffer.h/.cpp`, `MaterialExpressionClassCache.h/.cpp`
+### Material Expression Encoding
 
-**API:** `UMaterialGraphEditingLibrary` (CDO: `/Script/UnrealClientProtocolEditor.Default__MaterialGraphEditingLibrary`)
+Material expressions use their UE class name directly via `MaterialExpressionClassCache` (e.g. `TextureSample`, `ScalarParameter`, `Multiply`). No semantic encoding needed.
 
-| Function | Params | Description |
-|----------|--------|-------------|
-| `ListScopes` | AssetPath | Material property outputs + Composite subgraphs |
-| `ReadGraph` | AssetPath, ScopeName | Serialize material graph to text |
-| `WriteGraph` | AssetPath, ScopeName, GraphText | Apply text changes, returns diff JSON |
-| `Relayout` | AssetPath | Force auto-layout |
+Special property handlers (`IMaterialPropertyHandler` registry) for:
+- `UMaterialExpressionCustom` — `InputNames` array
+- `UMaterialExpressionSwitch` — `SwitchInputNames` array
+- `UMaterialExpressionSetMaterialAttributes` — `Attributes` GUIDs
 
-**Scope model:** Scopes are material output pins (BaseColor, Roughness, ...) or `Composite:<name>` subgraphs. Empty scope = all connected nodes.
+## Supported Asset Types
 
-**Node ClassName:** UMaterialExpression class names (e.g. `MaterialExpressionScalarParameter`)
+### Blueprint
 
-**Special features:**
-- Reroute node tracing (skips `UMaterialExpressionRerouteBase`)
-- Material output links (`bToGraphOutput = true`, `[BaseColor]`)
-- Custom/Switch/SetMaterialAttributes dynamic pin handling
-- Composite subgraph scoping
+**Sections:** `[Variables]`, `[EventGraph]`, `[Function:Name]`, `[Macro:Name]`
 
-### Blueprint Graph
-
-**Files:** `Private/Blueprint/BlueprintGraphSerializer.h/.cpp`, `BlueprintGraphDiffer.h/.cpp`
-
-**API:** `UBlueprintGraphEditingLibrary` (CDO: `/Script/UnrealClientProtocolEditor.Default__BlueprintGraphEditingLibrary`)
-
-| Function | Params | Description |
-|----------|--------|-------------|
-| `ListScopes` | AssetPath | EventGraph pages + Function:Name + Macro:Name |
-| `ReadGraph` | AssetPath, ScopeName | Serialize blueprint graph to text |
-| `WriteGraph` | AssetPath, ScopeName, GraphText | Apply text changes, returns diff JSON |
-
-**Scope model:** Each UEdGraph is a scope. Naming convention:
-- `EventGraph` (or graph name for UbergraphPages)
-- `Function:<FunctionName>`
-- `Macro:<MacroName>`
-
-**Name encoding:** Blueprint names (functions, variables, events, pins) may contain spaces. In the text format, **spaces are encoded as underscores** (`_`). When writing back, the system uses fuzzy matching (space/underscore equivalence) to resolve names against the live Blueprint. For example, a variable named `My Variable` becomes `My_Variable` in the text.
-
-**Node ClassName encoding:** Blueprint nodes use semantic class names:
-- `CallFunction:<ClassName>.<FuncName>` or `CallFunction:<FuncName>` (self context)
-- `VariableGet:<VarName>`, `VariableSet:<VarName>`
-- `CustomEvent:<EventName>`, `Event:<EventName>`
-- `FunctionEntry`, `FunctionResult`
-- Raw UK2Node class name for other node types
-
-**Pin defaults:** Serialized as `pin.<PinName>` in the properties block. Only non-default, unconnected input pins are included. Pin names follow the same space-to-underscore encoding.
-
-**Connection model:** All connections are node-to-node (`bToGraphOutput = false`). Pin names use the encoded form (underscores for spaces). Exec flow pins use their actual names (typically `execute` / `then`).
-
-**Special features:**
-- Knot (reroute) node tracing
-- Comment node skipping
-- FunctionEntry/FunctionResult protection (cannot be deleted)
-- Schema-based connection validation
+- CreateSection/RemoveSection supported for Function and Macro
+- Variables use `FEdGraphPinType` reflection serialization
+- Pin defaults set via `Schema::TrySetDefaultValue` for correct DefaultObject/DefaultTextValue handling
 - Auto-recompile after write
+
+### Material
+
+**Sections:** `[Properties]`, `[Material]`, `[Composite:Name]`
+
+- `[Material]` = complete main graph (all non-composite nodes), single read/write
+- `[Composite:Name]` = physically isolated subgraphs
+- Output pins expressed as `> -> [BaseColor]` graph output connections
+- Auto-recompile, relayout, and editor UI refresh after write
 
 ## Adding Support for a New Graph Type
 
-To add support for a new graph type (e.g. Niagara, Animation Blueprint):
+1. **Create a SectionHandler** implementing `INodeCodeSectionHandler`
+2. **Register** it in `NodeCodeEditingLibrary.cpp`'s auto-register block
+3. **Create a Skill** at `Skills/unreal-<domain>-editing/SKILL.md`
 
-### 1. Create Serializer
+The handler must implement:
+- `ListSections()` — enumerate available sections
+- `Read()` — serialize a section to `FNodeCodeSectionIR`
+- `Write()` — diff and apply changes from `FNodeCodeSectionIR`
+- `CreateSection()` / `RemoveSection()` — structural operations
 
-```
-Private/<Domain>/<Domain>GraphSerializer.h/.cpp
-```
-
-Implement:
-- `BuildIR()` — collect nodes from the graph, populate `FNodeCodeGraphIR`
-- `ListScopes()` — return available sub-scopes
-- `Serialize()` — call `BuildIR()` then `FNodeCodeTextFormat::IRToText()`
-
-Key decisions:
-- How to collect nodes (which nodes to include/skip)
-- How to encode node class names (semantic vs raw)
-- How to serialize node properties (special handling for domain-specific nodes)
-- How to enumerate and name pins
-- Whether the graph has "graph outputs" (`bToGraphOutput`)
-
-### 2. Create Differ
-
-```
-Private/<Domain>/<Domain>GraphDiffer.h/.cpp
-```
-
-Implement:
-- `Apply()` — parse text, call `DiffAndApply()`
-- `DiffAndApply()` — follow the 6-phase pattern
-- `CreateNodeFromIR()` — create nodes from class name + properties
-- `ApplyPropertyChanges()` — set properties on existing nodes
-
-Key decisions:
-- How to create nodes (graph-specific APIs)
-- How to establish connections (pin-based vs expression-based)
-- Post-apply cleanup (recompile, relayout, refresh)
-
-### 3. Create API Library
-
-```
-Public/<Domain>/<Domain>GraphEditingLibrary.h
-Private/<Domain>/<Domain>GraphEditingLibrary.cpp
-```
-
-Standard `UBlueprintFunctionLibrary` with `ReadGraph`, `WriteGraph`, `ListScopes`.
-
-### 4. Update Build.cs
-
-Add required module dependencies.
-
-### 5. Create Skill
-
-Add `Skills/unreal-<domain>-editing/SKILL.md` documenting the API, text format specifics, and common node classes.
+The text format, parsing, and diff infrastructure are shared.

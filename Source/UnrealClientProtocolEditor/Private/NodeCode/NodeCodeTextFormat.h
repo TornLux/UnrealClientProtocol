@@ -8,7 +8,21 @@
 class FNodeCodeTextFormat
 {
 public:
-	static FString IRToText(const FNodeCodeGraphIR& IR);
-	static FNodeCodeGraphIR ParseText(const FString& GraphText);
+	static FString DocumentToText(const FNodeCodeDocumentIR& Document);
+	static FNodeCodeDocumentIR ParseDocument(const FString& Text);
+
+	static FString SectionToText(const FNodeCodeSectionIR& Section);
+	static FNodeCodeSectionIR ParseSection(const FString& Text, const FString& Type, const FString& Name);
+
 	static FString DiffResultToJson(const FNodeCodeDiffResult& Result);
+
+private:
+	static FString GraphToText(const FNodeCodeGraphIR& IR);
+	static FString PropertiesToText(const TMap<FString, FString>& Properties);
+
+	static void ParseGraphLines(const TArray<FString>& Lines, FNodeCodeGraphIR& OutGraph);
+	static void ParsePropertyLines(const TArray<FString>& Lines, TMap<FString, FString>& OutProperties);
+
+	static bool ParseNodeLine(const FString& Line, FNodeCodeNodeIR& OutNode);
+	static bool ParseLinkLine(const FString& Line, int32 OwnerNodeIndex, FNodeCodeLinkIR& OutLink);
 };

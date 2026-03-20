@@ -8,5 +8,10 @@ class FNodeCodePropertyUtils
 {
 public:
 	static FString FormatPropertyValue(FProperty* Prop, const void* ValuePtr, UObject* Owner);
+
 	static bool ShouldSkipProperty(const FProperty* Prop);
+
+	static const TSet<FName>& GetEdGraphNodeSkipSet();
+
+	static const TSet<FName>& GetMaterialExpressionSkipSet();
 };
