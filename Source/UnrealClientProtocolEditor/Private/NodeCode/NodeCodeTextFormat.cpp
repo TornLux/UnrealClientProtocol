@@ -6,7 +6,7 @@
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
 
-// ---- Text Parser Helpers ----
+// ---- Node Line Parsing ----
 
 static FString TrimLine(const FString& Line)
 {
@@ -15,18 +15,18 @@ static FString TrimLine(const FString& Line)
 	return Result;
 }
 
-static bool ParseNodeLine(const FString& Line, int32& OutIndex, FString& OutClassName, TMap<FString, FString>& OutProps, FGuid& OutGuid)
+bool FNodeCodeTextFormat::ParseNodeLine(const FString& Line, FNodeCodeNodeIR& OutNode)
 {
 	FString Working = Line;
 
-	OutGuid.Invalidate();
+	OutNode.Guid.Invalidate();
 	int32 HashPos;
 	if (Working.FindLastChar('#', HashPos))
 	{
 		FString GuidStr = Working.Mid(HashPos + 1).TrimStartAndEnd();
 		if (GuidStr.Len() >= 32)
 		{
-			FGuid::Parse(GuidStr, OutGuid);
+			FGuid::Parse(GuidStr, OutNode.Guid);
 		}
 		Working = Working.Left(HashPos).TrimEnd();
 	}
@@ -50,7 +50,7 @@ static bool ParseNodeLine(const FString& Line, int32& OutIndex, FString& OutClas
 				FString Value = PairStr.Mid(ColonPos + 1).TrimStartAndEnd();
 				if (!Key.IsEmpty())
 				{
-					OutProps.Add(Key, Value);
+					OutNode.Properties.Add(Key, Value);
 				}
 			}
 		};
@@ -64,11 +64,11 @@ static bool ParseNodeLine(const FString& Line, int32& OutIndex, FString& OutClas
 			}
 			else if (!bInQuote)
 			{
-				if (Ch == '(' || Ch == '[')
+				if (Ch == '(' || Ch == '[' || Ch == '{')
 				{
 					Depth++;
 				}
-				else if (Ch == ')' || Ch == ']')
+				else if (Ch == ')' || Ch == ']' || Ch == '}')
 				{
 					Depth--;
 				}
@@ -97,54 +97,52 @@ static bool ParseNodeLine(const FString& Line, int32& OutIndex, FString& OutClas
 		return false;
 	}
 
-	OutIndex = FCString::Atoi(*IndexStr.Mid(1));
-	OutClassName = Working.Mid(SpacePos + 1).TrimStartAndEnd();
+	OutNode.Index = FCString::Atoi(*IndexStr.Mid(1));
+	OutNode.ClassName = Working.Mid(SpacePos + 1).TrimStartAndEnd();
 
-	return !OutClassName.IsEmpty();
+	return !OutNode.ClassName.IsEmpty();
 }
 
-static bool ParseLinkLine(const FString& Line, int32& OutFromNode, FString& OutFromOutput,
-	int32& OutToNode, FString& OutToInput, bool& bOutToGraphOutput)
+// ---- Link Line Parsing ----
+
+bool FNodeCodeTextFormat::ParseLinkLine(const FString& Line, int32 OwnerNodeIndex, FNodeCodeLinkIR& OutLink)
 {
-	int32 ArrowPos = Line.Find(TEXT("->"));
+	FString Working = Line.TrimStartAndEnd();
+	if (!Working.RemoveFromStart(TEXT(">")))
+	{
+		return false;
+	}
+	Working.TrimStartInline();
+
+	int32 ArrowPos = Working.Find(TEXT("->"));
 	if (ArrowPos == INDEX_NONE)
 	{
 		return false;
 	}
 
-	FString FromStr = Line.Left(ArrowPos).TrimEnd();
-	FString ToStr = Line.Mid(ArrowPos + 2).TrimStart();
+	FString FromStr = Working.Left(ArrowPos).TrimEnd();
+	FString ToStr = Working.Mid(ArrowPos + 2).TrimStart();
 
-	int32 DotPos;
-	if (FromStr.FindChar('.', DotPos))
+	OutLink.FromNodeIndex = OwnerNodeIndex;
+	if (!FromStr.IsEmpty())
 	{
-		FString NodeStr = FromStr.Left(DotPos);
-		if (!NodeStr.StartsWith(TEXT("N")))
-		{
-			return false;
-		}
-		OutFromNode = FCString::Atoi(*NodeStr.Mid(1));
-		OutFromOutput = FromStr.Mid(DotPos + 1);
+		OutLink.FromOutputName = FromStr;
 	}
 	else
 	{
-		if (!FromStr.StartsWith(TEXT("N")))
-		{
-			return false;
-		}
-		OutFromNode = FCString::Atoi(*FromStr.Mid(1));
-		OutFromOutput = FString();
+		OutLink.FromOutputName.Empty();
 	}
 
 	if (ToStr.StartsWith(TEXT("[")) && ToStr.EndsWith(TEXT("]")))
 	{
-		bOutToGraphOutput = true;
-		OutToInput = ToStr.Mid(1, ToStr.Len() - 2);
-		OutToNode = -1;
+		OutLink.bToGraphOutput = true;
+		OutLink.ToInputName = ToStr.Mid(1, ToStr.Len() - 2);
+		OutLink.ToNodeIndex = -1;
 	}
 	else
 	{
-		bOutToGraphOutput = false;
+		OutLink.bToGraphOutput = false;
+		int32 DotPos;
 		if (ToStr.FindChar('.', DotPos))
 		{
 			FString NodeStr = ToStr.Left(DotPos);
@@ -152,34 +150,102 @@ static bool ParseLinkLine(const FString& Line, int32& OutFromNode, FString& OutF
 			{
 				return false;
 			}
-			OutToNode = FCString::Atoi(*NodeStr.Mid(1));
-			OutToInput = ToStr.Mid(DotPos + 1);
+			OutLink.ToNodeIndex = FCString::Atoi(*NodeStr.Mid(1));
+			OutLink.ToInputName = ToStr.Mid(DotPos + 1);
 		}
 		else
 		{
-			return false;
+			if (!ToStr.StartsWith(TEXT("N")))
+			{
+				return false;
+			}
+			OutLink.ToNodeIndex = FCString::Atoi(*ToStr.Mid(1));
+			OutLink.ToInputName.Empty();
 		}
 	}
 
 	return true;
 }
 
-// ---- Public API ----
+// ---- Graph parsing from lines ----
 
-FString FNodeCodeTextFormat::IRToText(const FNodeCodeGraphIR& IR)
+void FNodeCodeTextFormat::ParseGraphLines(const TArray<FString>& Lines, FNodeCodeGraphIR& OutGraph)
+{
+	int32 CurrentNodeIndex = -1;
+
+	for (const FString& RawLine : Lines)
+	{
+		FString Line = TrimLine(RawLine);
+		if (Line.IsEmpty() || Line.StartsWith(TEXT("#")))
+		{
+			continue;
+		}
+
+		if (Line.StartsWith(TEXT("N")) && !Line.StartsWith(TEXT("N "))
+			&& Line.Len() > 1 && FChar::IsDigit(Line[1]))
+		{
+			FNodeCodeNodeIR Node;
+			if (ParseNodeLine(Line, Node))
+			{
+				CurrentNodeIndex = Node.Index;
+				OutGraph.Nodes.Add(MoveTemp(Node));
+			}
+			continue;
+		}
+
+		FString Trimmed = Line;
+		if (Trimmed.StartsWith(TEXT(">")))
+		{
+			if (CurrentNodeIndex >= 0)
+			{
+				FNodeCodeLinkIR Link;
+				if (ParseLinkLine(Trimmed, CurrentNodeIndex, Link))
+				{
+					OutGraph.Links.Add(MoveTemp(Link));
+				}
+			}
+			continue;
+		}
+	}
+}
+
+void FNodeCodeTextFormat::ParsePropertyLines(const TArray<FString>& Lines, TMap<FString, FString>& OutProperties)
+{
+	for (const FString& RawLine : Lines)
+	{
+		FString Line = TrimLine(RawLine);
+		if (Line.IsEmpty() || Line.StartsWith(TEXT("#")))
+		{
+			continue;
+		}
+
+		int32 ColonPos;
+		if (Line.FindChar(':', ColonPos) && ColonPos > 0)
+		{
+			FString Key = Line.Left(ColonPos).TrimStartAndEnd();
+			FString Value = Line.Mid(ColonPos + 1).TrimStartAndEnd();
+			if (!Key.IsEmpty())
+			{
+				OutProperties.Add(Key, Value);
+			}
+		}
+	}
+}
+
+// ---- Serialization ----
+
+FString FNodeCodeTextFormat::GraphToText(const FNodeCodeGraphIR& IR)
 {
 	FString Result;
 
-	if (!IR.ScopeName.IsEmpty())
+	TMap<int32, TArray<const FNodeCodeLinkIR*>> NodeLinks;
+	for (const FNodeCodeLinkIR& Link : IR.Links)
 	{
-		Result += FString::Printf(TEXT("=== scope: %s ===\n\n"), *IR.ScopeName);
+		NodeLinks.FindOrAdd(Link.FromNodeIndex).Add(&Link);
 	}
 
-	Result += TEXT("=== nodes ===\n");
-	for (int32 i = 0; i < IR.Nodes.Num(); ++i)
+	for (const FNodeCodeNodeIR& Node : IR.Nodes)
 	{
-		const FNodeCodeNodeIR& Node = IR.Nodes[i];
-
 		Result += FString::Printf(TEXT("N%d %s"), Node.Index, *Node.ClassName);
 
 		if (Node.Properties.Num() > 0)
@@ -204,94 +270,195 @@ FString FNodeCodeTextFormat::IRToText(const FNodeCodeGraphIR& IR)
 		}
 
 		Result += TEXT("\n");
-	}
 
-	Result += TEXT("\n=== links ===\n");
-	for (const FNodeCodeLinkIR& Link : IR.Links)
-	{
-		FString FromStr = FString::Printf(TEXT("N%d"), Link.FromNodeIndex);
-		if (!Link.FromOutputName.IsEmpty())
+		if (const TArray<const FNodeCodeLinkIR*>* Links = NodeLinks.Find(Node.Index))
 		{
-			FromStr += FString::Printf(TEXT(".%s"), *Link.FromOutputName);
+			for (const FNodeCodeLinkIR* Link : *Links)
+			{
+				FString FromPart;
+				if (!Link->FromOutputName.IsEmpty())
+				{
+					FromPart = Link->FromOutputName;
+				}
+
+				FString ToPart;
+				if (Link->bToGraphOutput)
+				{
+					ToPart = FString::Printf(TEXT("[%s]"), *Link->ToInputName);
+				}
+				else if (!Link->ToInputName.IsEmpty())
+				{
+					ToPart = FString::Printf(TEXT("N%d.%s"), Link->ToNodeIndex, *Link->ToInputName);
+				}
+				else
+				{
+					ToPart = FString::Printf(TEXT("N%d"), Link->ToNodeIndex);
+				}
+
+				if (FromPart.IsEmpty())
+				{
+					Result += FString::Printf(TEXT("  > -> %s\n"), *ToPart);
+				}
+				else
+				{
+					Result += FString::Printf(TEXT("  > %s -> %s\n"), *FromPart, *ToPart);
+				}
+			}
 		}
 
-		FString ToStr;
-		if (Link.bToGraphOutput)
-		{
-			ToStr = FString::Printf(TEXT("[%s]"), *Link.ToInputName);
-		}
-		else
-		{
-			ToStr = FString::Printf(TEXT("N%d.%s"), Link.ToNodeIndex, *Link.ToInputName);
-		}
-
-		Result += FString::Printf(TEXT("%s -> %s\n"), *FromStr, *ToStr);
+		Result += TEXT("\n");
 	}
 
 	return Result;
 }
 
-FNodeCodeGraphIR FNodeCodeTextFormat::ParseText(const FString& GraphText)
+FString FNodeCodeTextFormat::PropertiesToText(const TMap<FString, FString>& Properties)
 {
-	FNodeCodeGraphIR IR;
+	FString Result;
+	for (const auto& Pair : Properties)
+	{
+		Result += FString::Printf(TEXT("%s: %s\n"), *Pair.Key, *Pair.Value);
+	}
+	return Result;
+}
+
+FString FNodeCodeTextFormat::SectionToText(const FNodeCodeSectionIR& Section)
+{
+	FString Result = Section.GetHeader() + TEXT("\n\n");
+
+	if (Section.IsRawTextSection())
+	{
+		Result += Section.RawText;
+	}
+	else if (Section.IsGraphSection())
+	{
+		Result += GraphToText(Section.Graph);
+	}
+	else
+	{
+		Result += PropertiesToText(Section.Properties);
+	}
+
+	return Result;
+}
+
+FString FNodeCodeTextFormat::DocumentToText(const FNodeCodeDocumentIR& Document)
+{
+	FString Result;
+	for (int32 i = 0; i < Document.Sections.Num(); ++i)
+	{
+		if (i > 0)
+		{
+			Result += TEXT("\n");
+		}
+		Result += SectionToText(Document.Sections[i]);
+	}
+	return Result;
+}
+
+// ---- Document Parsing ----
+
+FNodeCodeSectionIR FNodeCodeTextFormat::ParseSection(const FString& Text, const FString& Type, const FString& Name)
+{
+	FNodeCodeSectionIR Section;
+	Section.Type = Type;
+	Section.Name = Name;
+
+	if (Section.IsRawTextSection())
+	{
+		Section.RawText = Text;
+		return Section;
+	}
 
 	TArray<FString> Lines;
-	GraphText.ParseIntoArrayLines(Lines);
+	Text.ParseIntoArrayLines(Lines);
 
-	enum class ESection { None, Nodes, Links };
-	ESection CurrentSection = ESection::None;
+	if (Section.IsGraphSection())
+	{
+		ParseGraphLines(Lines, Section.Graph);
+	}
+	else
+	{
+		ParsePropertyLines(Lines, Section.Properties);
+	}
 
-	for (const FString& RawLine : Lines)
+	return Section;
+}
+
+FNodeCodeDocumentIR FNodeCodeTextFormat::ParseDocument(const FString& Text)
+{
+	FNodeCodeDocumentIR Document;
+
+	TArray<FString> AllLines;
+	Text.ParseIntoArrayLines(AllLines);
+
+	FString CurrentType;
+	FString CurrentName;
+	TArray<FString> CurrentLines;
+	bool bHasSection = false;
+
+	auto FlushSection = [&]()
+	{
+		if (!bHasSection)
+		{
+			return;
+		}
+
+		FNodeCodeSectionIR Section;
+		Section.Type = CurrentType;
+		Section.Name = CurrentName;
+
+		if (Section.IsRawTextSection())
+		{
+			Section.RawText = FString::Join(CurrentLines, TEXT("\n"));
+			if (!Section.RawText.IsEmpty())
+			{
+				Section.RawText += TEXT("\n");
+			}
+		}
+		else if (Section.IsGraphSection())
+		{
+			ParseGraphLines(CurrentLines, Section.Graph);
+		}
+		else
+		{
+			ParsePropertyLines(CurrentLines, Section.Properties);
+		}
+
+		Document.Sections.Add(MoveTemp(Section));
+		CurrentLines.Empty();
+	};
+
+	for (const FString& RawLine : AllLines)
 	{
 		FString Line = TrimLine(RawLine);
-		if (Line.IsEmpty() || Line.StartsWith(TEXT("#")))
-		{
-			continue;
-		}
 
-		if (Line.StartsWith(TEXT("=== scope:")))
+		if (Line.StartsWith(TEXT("[")) && Line.EndsWith(TEXT("]")))
 		{
-			int32 ColonPos = Line.Find(TEXT(":"));
-			int32 EndPos = Line.Find(TEXT("==="), ESearchCase::IgnoreCase, ESearchDir::FromStart, ColonPos + 1);
-			if (ColonPos != INDEX_NONE && EndPos != INDEX_NONE)
+			FlushSection();
+
+			FString Type, Name;
+			if (NodeCodeUtils::ParseSectionHeader(Line, Type, Name))
 			{
-				IR.ScopeName = Line.Mid(ColonPos + 1, EndPos - ColonPos - 1).TrimStartAndEnd();
+				CurrentType = Type;
+				CurrentName = Name;
+				bHasSection = true;
 			}
 			continue;
 		}
 
-		if (Line == TEXT("=== nodes ==="))
+		if (bHasSection)
 		{
-			CurrentSection = ESection::Nodes;
-			continue;
-		}
-		if (Line == TEXT("=== links ==="))
-		{
-			CurrentSection = ESection::Links;
-			continue;
-		}
-
-		if (CurrentSection == ESection::Nodes)
-		{
-			FNodeCodeNodeIR Node;
-			if (ParseNodeLine(Line, Node.Index, Node.ClassName, Node.Properties, Node.Guid))
-			{
-				IR.Nodes.Add(MoveTemp(Node));
-			}
-		}
-		else if (CurrentSection == ESection::Links)
-		{
-			FNodeCodeLinkIR Link;
-			if (ParseLinkLine(Line, Link.FromNodeIndex, Link.FromOutputName,
-				Link.ToNodeIndex, Link.ToInputName, Link.bToGraphOutput))
-			{
-				IR.Links.Add(MoveTemp(Link));
-			}
+			CurrentLines.Add(RawLine);
 		}
 	}
 
-	return IR;
+	FlushSection();
+
+	return Document;
 }
+
+// ---- Diff Result ----
 
 FString FNodeCodeTextFormat::DiffResultToJson(const FNodeCodeDiffResult& Result)
 {

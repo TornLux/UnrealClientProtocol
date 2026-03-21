@@ -1,7 +1,8 @@
 // MIT License - Copyright (c) 2025 Italink
 
 #include "Material/MaterialGraphSerializer.h"
-#include "Material/MaterialExpressionClassCache.h"
+#include "NodeCode/NodeCodeClassCache.h"
+#include "Material/IMaterialPropertyHandler.h"
 #include "NodeCode/NodeCodeTextFormat.h"
 #include "NodeCode/NodeCodePropertyUtils.h"
 
@@ -36,21 +37,109 @@ static UMaterialExpression* TraceReroute(FExpressionInput* Input, int32& OutOutp
 	return Input->Expression;
 }
 
-// -------------------------------------------------------------------
+// ---- List Sections ----
 
-FString FMaterialGraphSerializer::Serialize(UMaterial* Material, const FString& ScopeName)
+TArray<FNodeCodeSectionIR> FMaterialGraphSerializer::ListSections(UMaterial* Material)
 {
-	FNodeCodeGraphIR IR = BuildIR(Material, ScopeName);
-	return FNodeCodeTextFormat::IRToText(IR);
+	TArray<FNodeCodeSectionIR> Sections;
+	if (!Material)
+	{
+		return Sections;
+	}
+
+	{
+		FNodeCodeSectionIR PropSection;
+		PropSection.Type = TEXT("Properties");
+		Sections.Add(MoveTemp(PropSection));
+	}
+
+	{
+		FNodeCodeSectionIR MatSection;
+		MatSection.Type = TEXT("Material");
+		Sections.Add(MoveTemp(MatSection));
+	}
+
+	TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = Material->GetExpressions();
+	for (const TObjectPtr<UMaterialExpression>& Expr : Expressions)
+	{
+		if (UMaterialExpressionComposite* Composite = Cast<UMaterialExpressionComposite>(Expr.Get()))
+		{
+			if (!Composite->SubgraphName.IsEmpty())
+			{
+				FNodeCodeSectionIR CompSection;
+				CompSection.Type = TEXT("Composite");
+				CompSection.Name = Composite->SubgraphName;
+				Sections.Add(MoveTemp(CompSection));
+			}
+		}
+	}
+
+	return Sections;
 }
 
-FString FMaterialGraphSerializer::Serialize(UMaterialFunction* MaterialFunction, const FString& ScopeName)
+TArray<FNodeCodeSectionIR> FMaterialGraphSerializer::ListSections(UMaterialFunction* MaterialFunction)
 {
-	FNodeCodeGraphIR IR = BuildIR(MaterialFunction, ScopeName);
-	return FNodeCodeTextFormat::IRToText(IR);
+	TArray<FNodeCodeSectionIR> Sections;
+	if (!MaterialFunction)
+	{
+		return Sections;
+	}
+
+	FNodeCodeSectionIR MatSection;
+	MatSection.Type = TEXT("Material");
+	Sections.Add(MoveTemp(MatSection));
+
+	return Sections;
 }
 
-FNodeCodeGraphIR FMaterialGraphSerializer::BuildIR(UMaterial* Material, const FString& ScopeName)
+// ---- Read Properties ----
+
+TMap<FString, FString> FMaterialGraphSerializer::ReadMaterialProperties(UMaterial* Material)
+{
+	TMap<FString, FString> Props;
+	if (!Material)
+	{
+		return Props;
+	}
+
+	UClass* MatClass = Material->GetClass();
+	UObject* CDO = MatClass->GetDefaultObject();
+
+	static const TArray<FName> PropertyNames = {
+		TEXT("ShadingModel"),
+		TEXT("BlendMode"),
+		TEXT("MaterialDomain"),
+		TEXT("TwoSided"),
+		TEXT("OpacityMaskClipValue"),
+		TEXT("bUseMaterialAttributes"),
+		TEXT("DecalBlendMode"),
+		TEXT("TranslucencyLightingMode"),
+	};
+
+	for (const FName& PropName : PropertyNames)
+	{
+		FProperty* Prop = MatClass->FindPropertyByName(PropName);
+		if (!Prop)
+		{
+			continue;
+		}
+
+		const void* InstanceValue = Prop->ContainerPtrToValuePtr<void>(Material);
+		const void* CDOValue = Prop->ContainerPtrToValuePtr<void>(CDO);
+
+		if (!Prop->Identical(InstanceValue, CDOValue, PPF_None))
+		{
+			FString ValueStr = FNodeCodePropertyUtils::FormatPropertyValue(Prop, InstanceValue, Material);
+			Props.Add(PropName.ToString(), MoveTemp(ValueStr));
+		}
+	}
+
+	return Props;
+}
+
+// ---- Build IR ----
+
+FNodeCodeGraphIR FMaterialGraphSerializer::BuildIR(UMaterial* Material)
 {
 	if (!Material)
 	{
@@ -58,10 +147,38 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIR(UMaterial* Material, const FS
 	}
 
 	TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = Material->GetExpressions();
-	return BuildIRFromExpressions(Expressions, Material, nullptr, ScopeName);
+	return BuildIRFromExpressions(Expressions, Material, nullptr, nullptr);
 }
 
-FNodeCodeGraphIR FMaterialGraphSerializer::BuildIR(UMaterialFunction* MaterialFunction, const FString& ScopeName)
+FNodeCodeGraphIR FMaterialGraphSerializer::BuildCompositeIR(UMaterial* Material, const FString& CompositeName)
+{
+	if (!Material)
+	{
+		return {};
+	}
+
+	TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = Material->GetExpressions();
+
+	UMaterialExpressionComposite* TargetComposite = nullptr;
+	for (const TObjectPtr<UMaterialExpression>& Expr : Expressions)
+	{
+		UMaterialExpressionComposite* Composite = Cast<UMaterialExpressionComposite>(Expr.Get());
+		if (Composite && Composite->SubgraphName == CompositeName)
+		{
+			TargetComposite = Composite;
+			break;
+		}
+	}
+
+	if (!TargetComposite)
+	{
+		return {};
+	}
+
+	return BuildIRFromExpressions(Expressions, Material, nullptr, TargetComposite);
+}
+
+FNodeCodeGraphIR FMaterialGraphSerializer::BuildIR(UMaterialFunction* MaterialFunction)
 {
 	if (!MaterialFunction)
 	{
@@ -69,99 +186,65 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIR(UMaterialFunction* MaterialFu
 	}
 
 	TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = MaterialFunction->GetExpressions();
-	return BuildIRFromExpressions(Expressions, nullptr, MaterialFunction, ScopeName);
+	return BuildIRFromExpressions(Expressions, nullptr, MaterialFunction, nullptr);
+}
+
+void FMaterialGraphSerializer::CollectAllConnectedNodes(
+	UMaterial* Material,
+	TSet<UMaterialExpression*>& OutReachable)
+{
+	TSet<UMaterialExpression*> Visited;
+
+	for (int32 i = 0; i < MP_MAX; ++i)
+	{
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(static_cast<EMaterialProperty>(i));
+		if (Input && Input->Expression)
+		{
+			int32 OutIdx;
+			UMaterialExpression* RealExpr = TraceReroute(Input, OutIdx);
+			if (RealExpr)
+			{
+				CollectReachableNodes(RealExpr, OutReachable, Visited);
+			}
+		}
+	}
+
+#if WITH_EDITORONLY_DATA
+	TArray<UMaterialExpressionCustomOutput*> CustomOutputs;
+	Material->GetAllCustomOutputExpressions(CustomOutputs);
+	for (UMaterialExpressionCustomOutput* CustomOut : CustomOutputs)
+	{
+		CollectReachableNodes(CustomOut, OutReachable, Visited);
+	}
+#endif
 }
 
 FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 	TConstArrayView<TObjectPtr<UMaterialExpression>> AllExpressions,
 	UMaterial* Material,
 	UMaterialFunction* MaterialFunction,
-	const FString& ScopeName)
+	UMaterialExpressionComposite* TargetComposite)
 {
-	FMaterialExpressionClassCache::Get().Build();
-
 	FNodeCodeGraphIR IR;
-	IR.ScopeName = ScopeName;
 
 	TSet<UMaterialExpression*> ReachableSet;
-	TSet<UMaterialExpression*> Visited;
-
-	bool bScopeIsComposite = false;
-	UMaterialExpressionComposite* TargetComposite = nullptr;
+	bool bScopeIsComposite = (TargetComposite != nullptr);
 
 	if (Material)
 	{
-		if (ScopeName.IsEmpty())
+		if (bScopeIsComposite)
 		{
-			for (int32 i = 0; i < MP_MAX; ++i)
+			for (const TObjectPtr<UMaterialExpression>& Expr : AllExpressions)
 			{
-				FExpressionInput* Input = Material->GetExpressionInputForProperty(static_cast<EMaterialProperty>(i));
-				if (Input && Input->Expression)
+				if (Expr && Expr->SubgraphExpression == TargetComposite)
 				{
-					int32 OutIdx;
-					UMaterialExpression* RealExpr = TraceReroute(Input, OutIdx);
-					if (RealExpr)
-					{
-						CollectReachableNodes(RealExpr, ReachableSet, Visited);
-					}
+					ReachableSet.Add(Expr.Get());
 				}
 			}
-
-#if WITH_EDITORONLY_DATA
-			TArray<UMaterialExpressionCustomOutput*> CustomOutputs;
-			Material->GetAllCustomOutputExpressions(CustomOutputs);
-			for (UMaterialExpressionCustomOutput* CustomOut : CustomOutputs)
-			{
-				CollectReachableNodes(CustomOut, ReachableSet, Visited);
-			}
-#endif
 		}
 		else
 		{
-			for (int32 i = 0; i < MP_MAX; ++i)
-			{
-				EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
-				const FString& AttrName = FMaterialAttributeDefinitionMap::GetAttributeName(Prop);
-				if (AttrName == ScopeName)
-				{
-					FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
-					if (Input && Input->Expression)
-					{
-						int32 OutIdx;
-						UMaterialExpression* RealExpr = TraceReroute(Input, OutIdx);
-						if (RealExpr)
-						{
-							CollectReachableNodes(RealExpr, ReachableSet, Visited);
-						}
-					}
-					break;
-				}
-			}
-
-			if (ReachableSet.Num() == 0)
-			{
-				for (const TObjectPtr<UMaterialExpression>& Expr : AllExpressions)
-				{
-					UMaterialExpressionComposite* Composite = Cast<UMaterialExpressionComposite>(Expr.Get());
-					if (Composite && Composite->SubgraphName == ScopeName)
-					{
-						TargetComposite = Composite;
-						bScopeIsComposite = true;
-						break;
-					}
-				}
-
-				if (TargetComposite)
-				{
-					for (const TObjectPtr<UMaterialExpression>& Expr : AllExpressions)
-					{
-						if (Expr && Expr->SubgraphExpression == TargetComposite)
-						{
-							ReachableSet.Add(Expr.Get());
-						}
-					}
-				}
-			}
+			CollectAllConnectedNodes(Material, ReachableSet);
 		}
 	}
 	else if (MaterialFunction)
@@ -201,7 +284,7 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 		Node.Index = NodeCounter;
 		Node.SourceObject = Expr.Get();
 		Node.Guid = Expr->MaterialExpressionGuid;
-		Node.ClassName = FMaterialExpressionClassCache::Get().GetSerializableName(Expr->GetClass());
+		Node.ClassName = FNodeCodeClassCache::Get().GetSerializableName(Expr->GetClass());
 
 		SerializeNodeProperties(Expr.Get(), Node.Properties);
 
@@ -242,30 +325,14 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 			IR.Links.Add(MoveTemp(Link));
 		};
 
-		if (ScopeName.IsEmpty())
+		for (int32 i = 0; i < MP_MAX; ++i)
 		{
-			for (int32 i = 0; i < MP_MAX; ++i)
+			EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
+			FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
+			if (Input && Input->Expression)
 			{
-				EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
-				FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
-				if (Input && Input->Expression)
-				{
-					const FString& AttrName = FMaterialAttributeDefinitionMap::GetAttributeName(Prop);
-					AddMaterialOutputLinks(Prop, AttrName);
-				}
-			}
-		}
-		else if (!bScopeIsComposite)
-		{
-			for (int32 i = 0; i < MP_MAX; ++i)
-			{
-				EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
 				const FString& AttrName = FMaterialAttributeDefinitionMap::GetAttributeName(Prop);
-				if (AttrName == ScopeName)
-				{
-					AddMaterialOutputLinks(Prop, AttrName);
-					break;
-				}
+				AddMaterialOutputLinks(Prop, AttrName);
 			}
 		}
 
@@ -391,74 +458,11 @@ void FMaterialGraphSerializer::SerializeNodeProperties(
 	UMaterialExpression* Expression,
 	TMap<FString, FString>& OutProperties)
 {
+	FMaterialPropertyHandlerRegistry::Get().SerializeSpecial(Expression, OutProperties);
+
 	UClass* ExprClass = Expression->GetClass();
 	UObject* CDO = ExprClass->GetDefaultObject();
-	const TSet<FName>& SkipSet = GetBaseClassSkipProperties();
-
-	if (UMaterialExpressionCustom* CustomExpr = Cast<UMaterialExpressionCustom>(Expression))
-	{
-		if (CustomExpr->Inputs.Num() > 0)
-		{
-			bool bHasNamedInputs = false;
-			for (const FCustomInput& CI : CustomExpr->Inputs)
-			{
-				if (!CI.InputName.IsNone())
-				{
-					bHasNamedInputs = true;
-					break;
-				}
-			}
-
-			if (bHasNamedInputs)
-			{
-				FString InputNames = TEXT("[");
-				bool bFirst = true;
-				for (const FCustomInput& CI : CustomExpr->Inputs)
-				{
-					if (!bFirst) InputNames += TEXT(",");
-					InputNames += FString::Printf(TEXT("\"%s\""), *CI.InputName.ToString());
-					bFirst = false;
-				}
-				InputNames += TEXT("]");
-				OutProperties.Add(TEXT("InputNames"), MoveTemp(InputNames));
-			}
-		}
-	}
-
-	if (UMaterialExpressionSwitch* SwitchExpr = Cast<UMaterialExpressionSwitch>(Expression))
-	{
-		if (SwitchExpr->Inputs.Num() > 0)
-		{
-			FString SwitchNames = TEXT("[");
-			bool bFirst = true;
-			for (const FSwitchCustomInput& SI : SwitchExpr->Inputs)
-			{
-				if (!bFirst) SwitchNames += TEXT(",");
-				SwitchNames += FString::Printf(TEXT("\"%s\""), *SI.InputName.ToString());
-				bFirst = false;
-			}
-			SwitchNames += TEXT("]");
-			OutProperties.Add(TEXT("SwitchInputNames"), MoveTemp(SwitchNames));
-		}
-	}
-
-	if (UMaterialExpressionSetMaterialAttributes* SetAttrExpr = Cast<UMaterialExpressionSetMaterialAttributes>(Expression))
-	{
-		if (SetAttrExpr->AttributeSetTypes.Num() > 0)
-		{
-			FString Attributes = TEXT("[");
-			bool bFirst = true;
-			for (const FGuid& AttrGuid : SetAttrExpr->AttributeSetTypes)
-			{
-				if (!bFirst) Attributes += TEXT(",");
-				const FString& AttrName = FMaterialAttributeDefinitionMap::GetAttributeName(AttrGuid);
-				Attributes += FString::Printf(TEXT("\"%s\""), *AttrName);
-				bFirst = false;
-			}
-			Attributes += TEXT("]");
-			OutProperties.Add(TEXT("Attributes"), MoveTemp(Attributes));
-		}
-	}
+	const TSet<FName>& SkipSet = FNodeCodePropertyUtils::GetMaterialExpressionSkipSet();
 
 	for (TFieldIterator<FProperty> PropIt(ExprClass); PropIt; ++PropIt)
 	{
@@ -579,87 +583,4 @@ bool FMaterialGraphSerializer::IsEmbeddedConnectionArrayProperty(const FProperty
 	}
 
 	return false;
-}
-
-const TSet<FName>& FMaterialGraphSerializer::GetBaseClassSkipProperties()
-{
-	static TSet<FName> SkipSet;
-	if (SkipSet.Num() == 0)
-	{
-		SkipSet.Add(TEXT("MaterialExpressionEditorX"));
-		SkipSet.Add(TEXT("MaterialExpressionEditorY"));
-		SkipSet.Add(TEXT("MaterialExpressionGuid"));
-		SkipSet.Add(TEXT("Material"));
-		SkipSet.Add(TEXT("Function"));
-		SkipSet.Add(TEXT("GraphNode"));
-		SkipSet.Add(TEXT("bRealtimePreview"));
-		SkipSet.Add(TEXT("bNeedToUpdatePreview"));
-		SkipSet.Add(TEXT("bIsParameterExpression"));
-		SkipSet.Add(TEXT("bShowOutputNameOnPin"));
-		SkipSet.Add(TEXT("bShowMaskColorsOnPin"));
-		SkipSet.Add(TEXT("bHidePreviewWindow"));
-		SkipSet.Add(TEXT("bCollapsed"));
-		SkipSet.Add(TEXT("bShaderInputData"));
-		SkipSet.Add(TEXT("Outputs"));
-		SkipSet.Add(TEXT("Desc"));
-		SkipSet.Add(TEXT("SubgraphExpression"));
-		SkipSet.Add(TEXT("AttributeSetTypes"));
-		SkipSet.Add(TEXT("PreEditAttributeSetTypes"));
-	}
-	return SkipSet;
-}
-
-TArray<FString> FMaterialGraphSerializer::ListScopes(UMaterial* Material)
-{
-	TArray<FString> Scopes;
-	if (!Material)
-	{
-		return Scopes;
-	}
-
-	for (int32 i = 0; i < MP_MAX; ++i)
-	{
-		EMaterialProperty Prop = static_cast<EMaterialProperty>(i);
-		FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
-		if (Input && Input->Expression)
-		{
-			const FString& AttrName = FMaterialAttributeDefinitionMap::GetAttributeName(Prop);
-			Scopes.Add(AttrName);
-		}
-	}
-
-#if WITH_EDITORONLY_DATA
-	TArray<UMaterialExpressionCustomOutput*> CustomOutputs;
-	Material->GetAllCustomOutputExpressions(CustomOutputs);
-	for (UMaterialExpressionCustomOutput* CustomOut : CustomOutputs)
-	{
-		Scopes.Add(CustomOut->GetClass()->GetName());
-	}
-#endif
-
-	TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = Material->GetExpressions();
-	for (const TObjectPtr<UMaterialExpression>& Expr : Expressions)
-	{
-		if (UMaterialExpressionComposite* Composite = Cast<UMaterialExpressionComposite>(Expr.Get()))
-		{
-			if (!Composite->SubgraphName.IsEmpty())
-			{
-				Scopes.Add(FString::Printf(TEXT("Composite:%s"), *Composite->SubgraphName));
-			}
-		}
-	}
-
-	return Scopes;
-}
-
-TArray<FString> FMaterialGraphSerializer::ListScopes(UMaterialFunction* MaterialFunction)
-{
-	TArray<FString> Scopes;
-	if (!MaterialFunction)
-	{
-		return Scopes;
-	}
-
-	Scopes.Add(TEXT("*"));
-	return Scopes;
 }

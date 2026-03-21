@@ -80,7 +80,7 @@ UCP provides several function libraries. Each has its own Skill for detailed doc
 | `UObjectOperationLibrary` | `/Script/UnrealClientProtocol.Default__ObjectOperationLibrary` | `unreal-object-operation` | Object property R/W, reflection, instance search |
 | `UObjectEditorOperationLibrary` | `/Script/UnrealClientProtocolEditor.Default__ObjectEditorOperationLibrary` | `unreal-object-operation` | Undo/Redo transactions |
 | `UAssetEditorOperationLibrary` | `/Script/UnrealClientProtocolEditor.Default__AssetEditorOperationLibrary` | `unreal-asset-operation` | Get AssetRegistry instance for asset queries |
-| `UMaterialGraphEditingLibrary` | `/Script/UnrealClientProtocolEditor.Default__MaterialGraphEditingLibrary` | `unreal-material-editing` | Material graph read/write |
+| `UNodeCodeEditingLibrary` | `/Script/UnrealClientProtocolEditor.Default__NodeCodeEditingLibrary` | `unreal-material-editing` / `unreal-blueprint-editing` | Unified node graph read/write (Material, Blueprint) |
 | `UActorEditorOperationLibrary` | `/Script/UnrealClientProtocolEditor.Default__ActorEditorOperationLibrary` | `unreal-actor-editing` | Actor operations (placeholder) |
 
 ## Response Format

@@ -21,7 +21,7 @@ FString FNodeCodePropertyUtils::FormatPropertyValue(FProperty* Prop, const void*
 		return ExportStr;
 	}
 
-	if (FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+	if (CastField<FStructProperty>(Prop))
 	{
 		FString ExportStr;
 		Prop->ExportTextItem_Direct(ExportStr, ValuePtr, nullptr, Owner, PPF_None, nullptr);
@@ -59,5 +59,101 @@ bool FNodeCodePropertyUtils::ShouldSkipProperty(const FProperty* Prop)
 		return true;
 	}
 
+	const FString Name = Prop->GetName();
+	if (Name.EndsWith(TEXT("_DEPRECATED")))
+	{
+		return true;
+	}
+
 	return false;
+}
+
+const TSet<FName>& FNodeCodePropertyUtils::GetEdGraphNodeSkipSet()
+{
+	static TSet<FName> SkipSet;
+	if (SkipSet.Num() == 0)
+	{
+		SkipSet.Add(TEXT("NodePosX"));
+		SkipSet.Add(TEXT("NodePosY"));
+		SkipSet.Add(TEXT("NodeWidth"));
+		SkipSet.Add(TEXT("NodeHeight"));
+		SkipSet.Add(TEXT("NodeGuid"));
+		SkipSet.Add(TEXT("NodeComment"));
+		SkipSet.Add(TEXT("ErrorType"));
+		SkipSet.Add(TEXT("ErrorMsg"));
+		SkipSet.Add(TEXT("bHasCompilerMessage"));
+		SkipSet.Add(TEXT("bCommentBubblePinned"));
+		SkipSet.Add(TEXT("bCommentBubbleVisible"));
+		SkipSet.Add(TEXT("bCommentBubbleMakeVisible"));
+		SkipSet.Add(TEXT("bCanRenameNode"));
+		SkipSet.Add(TEXT("bCanResizeNode"));
+		SkipSet.Add(TEXT("bDisplayAsDisabled"));
+		SkipSet.Add(TEXT("bUserSetEnabledState"));
+		SkipSet.Add(TEXT("bIsIntermediateNode"));
+		SkipSet.Add(TEXT("AdvancedPinDisplay"));
+		SkipSet.Add(TEXT("EnabledState"));
+		SkipSet.Add(TEXT("DeprecatedPins"));
+		SkipSet.Add(TEXT("NodeUpgradeMessage"));
+		SkipSet.Add(TEXT("bDefaultsToPureFunc"));
+		SkipSet.Add(TEXT("bWantsEnumToExecExpansion"));
+		SkipSet.Add(TEXT("bIsPureFunc"));
+		SkipSet.Add(TEXT("bIsConstFunc"));
+		SkipSet.Add(TEXT("bIsInterfaceCall"));
+		SkipSet.Add(TEXT("bIsFinalFunction"));
+		SkipSet.Add(TEXT("bIsBeadFunction"));
+		SkipSet.Add(TEXT("NodePurityOverride"));
+	}
+	return SkipSet;
+}
+
+const TSet<FName>& FNodeCodePropertyUtils::GetMaterialExpressionSkipSet()
+{
+	static TSet<FName> SkipSet;
+	if (SkipSet.Num() == 0)
+	{
+		SkipSet.Add(TEXT("MaterialExpressionEditorX"));
+		SkipSet.Add(TEXT("MaterialExpressionEditorY"));
+		SkipSet.Add(TEXT("MaterialExpressionGuid"));
+		SkipSet.Add(TEXT("Material"));
+		SkipSet.Add(TEXT("Function"));
+		SkipSet.Add(TEXT("GraphNode"));
+		SkipSet.Add(TEXT("bRealtimePreview"));
+		SkipSet.Add(TEXT("bNeedToUpdatePreview"));
+		SkipSet.Add(TEXT("bIsParameterExpression"));
+		SkipSet.Add(TEXT("bShowOutputNameOnPin"));
+		SkipSet.Add(TEXT("bShowMaskColorsOnPin"));
+		SkipSet.Add(TEXT("bHidePreviewWindow"));
+		SkipSet.Add(TEXT("bCollapsed"));
+		SkipSet.Add(TEXT("bShaderInputData"));
+		SkipSet.Add(TEXT("Outputs"));
+		SkipSet.Add(TEXT("Desc"));
+		SkipSet.Add(TEXT("SubgraphExpression"));
+		SkipSet.Add(TEXT("AttributeSetTypes"));
+		SkipSet.Add(TEXT("PreEditAttributeSetTypes"));
+	}
+	return SkipSet;
+}
+
+const TSet<FName>& FNodeCodePropertyUtils::GetWidgetSkipSet()
+{
+	static TSet<FName> SkipSet;
+	if (SkipSet.Num() == 0)
+	{
+		SkipSet.Add(TEXT("Slot"));
+		SkipSet.Add(TEXT("bIsVariable"));
+		SkipSet.Add(TEXT("bIsDesignTime"));
+		SkipSet.Add(TEXT("DesignerFlags"));
+		SkipSet.Add(TEXT("DisplayLabel"));
+		SkipSet.Add(TEXT("bLockedInDesigner"));
+		SkipSet.Add(TEXT("DesignSizeMode"));
+		SkipSet.Add(TEXT("NativeBindings"));
+		SkipSet.Add(TEXT("ToolTipWidget"));
+		SkipSet.Add(TEXT("Navigation"));
+		SkipSet.Add(TEXT("FlowDirectionPreference"));
+		SkipSet.Add(TEXT("bCreatedByConstructionScript"));
+		SkipSet.Add(TEXT("bExpandedInDesigner"));
+		SkipSet.Add(TEXT("bHiddenInDesigner"));
+		SkipSet.Add(TEXT("CategoryName"));
+	}
+	return SkipSet;
 }

@@ -8,32 +8,18 @@
 class UBlueprint;
 class UEdGraph;
 class UEdGraphNode;
-class UEdGraphPin;
 
 class FBlueprintGraphSerializer
 {
 public:
-	static FString Serialize(UBlueprint* Blueprint, const FString& ScopeName);
+	static FNodeCodeGraphIR BuildIR(UEdGraph* Graph);
 
-	static FNodeCodeGraphIR BuildIR(UBlueprint* Blueprint, const FString& ScopeName);
+	static TArray<FNodeCodeSectionIR> ListSections(UBlueprint* Blueprint);
 
-	static TArray<FString> ListScopes(UBlueprint* Blueprint);
-
-	static UEdGraph* FindGraphByScope(UBlueprint* Blueprint, const FString& ScopeName);
+	static UEdGraph* FindGraphBySection(UBlueprint* Blueprint, const FString& Type, const FString& Name);
 
 private:
-
-	static FNodeCodeGraphIR BuildIRFromGraph(UEdGraph* Graph, const FString& ScopeName);
-
-	static void SerializeNodeProperties(
-		UEdGraphNode* Node,
-		TMap<FString, FString>& OutProperties);
-
-	static void SerializePinDefaults(
-		UEdGraphNode* Node,
-		TMap<FString, FString>& OutProperties);
-
-	static FString GetNodeClassName(UEdGraphNode* Node);
-
+	static void SerializeNodeProperties(UEdGraphNode* Node, TMap<FString, FString>& OutProperties);
+	static void SerializePinDefaults(UEdGraphNode* Node, TMap<FString, FString>& OutProperties);
 	static bool ShouldSkipNode(UEdGraphNode* Node);
 };

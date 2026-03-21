@@ -26,7 +26,37 @@ struct FNodeCodeGraphIR
 {
 	TArray<FNodeCodeNodeIR> Nodes;
 	TArray<FNodeCodeLinkIR> Links;
-	FString ScopeName;
+};
+
+struct FNodeCodeSectionIR
+{
+	FString Type;
+	FString Name;
+
+	FNodeCodeGraphIR Graph;
+
+	TMap<FString, FString> Properties;
+
+	// For sections with custom text format (e.g. WidgetTree's indentation-based tree)
+	FString RawText;
+
+	bool IsGraphSection() const { return Type != TEXT("Properties") && Type != TEXT("Variables") && Type != TEXT("WidgetTree"); }
+
+	bool IsRawTextSection() const { return Type == TEXT("WidgetTree"); }
+
+	FString GetHeader() const
+	{
+		if (Name.IsEmpty())
+		{
+			return FString::Printf(TEXT("[%s]"), *Type);
+		}
+		return FString::Printf(TEXT("[%s:%s]"), *Type, *Name);
+	}
+};
+
+struct FNodeCodeDocumentIR
+{
+	TArray<FNodeCodeSectionIR> Sections;
 };
 
 namespace NodeCodeUtils
@@ -44,6 +74,28 @@ namespace NodeCodeUtils
 		}
 		return Encoded.Replace(TEXT("_"), TEXT(" ")) == Original
 			|| Encoded == Original.Replace(TEXT(" "), TEXT("_"));
+	}
+
+	inline bool ParseSectionHeader(const FString& Header, FString& OutType, FString& OutName)
+	{
+		FString Inner = Header;
+		if (!Inner.RemoveFromStart(TEXT("[")) || !Inner.RemoveFromEnd(TEXT("]")))
+		{
+			return false;
+		}
+		Inner.TrimStartAndEndInline();
+		int32 ColonPos;
+		if (Inner.FindChar(':', ColonPos))
+		{
+			OutType = Inner.Left(ColonPos);
+			OutName = Inner.Mid(ColonPos + 1);
+		}
+		else
+		{
+			OutType = Inner;
+			OutName.Empty();
+		}
+		return !OutType.IsEmpty();
 	}
 }
 

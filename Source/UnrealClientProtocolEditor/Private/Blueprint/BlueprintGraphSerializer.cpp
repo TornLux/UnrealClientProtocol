@@ -1,7 +1,7 @@
 // MIT License - Copyright (c) 2025 Italink
 
 #include "Blueprint/BlueprintGraphSerializer.h"
-#include "NodeCode/NodeCodeTextFormat.h"
+#include "Blueprint/IBlueprintNodeEncoder.h"
 #include "NodeCode/NodeCodePropertyUtils.h"
 
 #include "Engine/Blueprint.h"
@@ -10,53 +10,34 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphNode_Comment.h"
 #include "K2Node.h"
-#include "K2Node_CallFunction.h"
-#include "K2Node_Variable.h"
-#include "K2Node_VariableGet.h"
-#include "K2Node_VariableSet.h"
-#include "K2Node_Event.h"
-#include "K2Node_CustomEvent.h"
+#include "K2Node_Knot.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
-#include "K2Node_Knot.h"
 #include "EdGraphSchema_K2.h"
 #include "UObject/UnrealType.h"
 
-FString FBlueprintGraphSerializer::Serialize(UBlueprint* Blueprint, const FString& ScopeName)
+TArray<FNodeCodeSectionIR> FBlueprintGraphSerializer::ListSections(UBlueprint* Blueprint)
 {
-	FNodeCodeGraphIR IR = BuildIR(Blueprint, ScopeName);
-	return FNodeCodeTextFormat::IRToText(IR);
-}
-
-FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIR(UBlueprint* Blueprint, const FString& ScopeName)
-{
+	TArray<FNodeCodeSectionIR> Sections;
 	if (!Blueprint)
 	{
-		return {};
+		return Sections;
 	}
 
-	UEdGraph* Graph = FindGraphByScope(Blueprint, ScopeName);
-	if (!Graph)
 	{
-		return {};
-	}
-
-	return BuildIRFromGraph(Graph, ScopeName);
-}
-
-TArray<FString> FBlueprintGraphSerializer::ListScopes(UBlueprint* Blueprint)
-{
-	TArray<FString> Scopes;
-	if (!Blueprint)
-	{
-		return Scopes;
+		FNodeCodeSectionIR VarSection;
+		VarSection.Type = TEXT("Variables");
+		Sections.Add(MoveTemp(VarSection));
 	}
 
 	for (UEdGraph* Graph : Blueprint->UbergraphPages)
 	{
 		if (Graph)
 		{
-			Scopes.Add(NodeCodeUtils::EncodeSpaces(Graph->GetName()));
+			FNodeCodeSectionIR Section;
+			Section.Type = TEXT("EventGraph");
+			Section.Name = (Blueprint->UbergraphPages.Num() > 1) ? NodeCodeUtils::EncodeSpaces(Graph->GetName()) : FString();
+			Sections.Add(MoveTemp(Section));
 		}
 	}
 
@@ -64,7 +45,10 @@ TArray<FString> FBlueprintGraphSerializer::ListScopes(UBlueprint* Blueprint)
 	{
 		if (Graph)
 		{
-			Scopes.Add(FString::Printf(TEXT("Function:%s"), *NodeCodeUtils::EncodeSpaces(Graph->GetName())));
+			FNodeCodeSectionIR Section;
+			Section.Type = TEXT("Function");
+			Section.Name = NodeCodeUtils::EncodeSpaces(Graph->GetName());
+			Sections.Add(MoveTemp(Section));
 		}
 	}
 
@@ -72,66 +56,62 @@ TArray<FString> FBlueprintGraphSerializer::ListScopes(UBlueprint* Blueprint)
 	{
 		if (Graph)
 		{
-			Scopes.Add(FString::Printf(TEXT("Macro:%s"), *NodeCodeUtils::EncodeSpaces(Graph->GetName())));
+			FNodeCodeSectionIR Section;
+			Section.Type = TEXT("Macro");
+			Section.Name = NodeCodeUtils::EncodeSpaces(Graph->GetName());
+			Sections.Add(MoveTemp(Section));
 		}
 	}
 
-	return Scopes;
+	return Sections;
 }
 
-UEdGraph* FBlueprintGraphSerializer::FindGraphByScope(UBlueprint* Blueprint, const FString& ScopeName)
+UEdGraph* FBlueprintGraphSerializer::FindGraphBySection(UBlueprint* Blueprint, const FString& Type, const FString& Name)
 {
 	if (!Blueprint)
 	{
 		return nullptr;
 	}
 
-	FString Prefix, GraphName;
-	if (ScopeName.Split(TEXT(":"), &Prefix, &GraphName))
+	auto SearchGraphArray = [&Name](const TArray<TObjectPtr<UEdGraph>>& Graphs) -> UEdGraph*
 	{
-		auto SearchGraphArray = [&GraphName](const TArray<TObjectPtr<UEdGraph>>& Graphs) -> UEdGraph*
+		for (const TObjectPtr<UEdGraph>& Graph : Graphs)
 		{
-			for (const TObjectPtr<UEdGraph>& Graph : Graphs)
+			if (Graph && NodeCodeUtils::MatchName(Name, Graph->GetName()))
 			{
-				if (Graph && NodeCodeUtils::MatchName(GraphName, Graph->GetName()))
-				{
-					return Graph.Get();
-				}
+				return Graph.Get();
 			}
-			return nullptr;
-		};
-
-		if (Prefix == TEXT("Function"))
-		{
-			return SearchGraphArray(Blueprint->FunctionGraphs);
-		}
-		if (Prefix == TEXT("Macro"))
-		{
-			return SearchGraphArray(Blueprint->MacroGraphs);
 		}
 		return nullptr;
-	}
+	};
 
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	if (Type == TEXT("Function"))
 	{
-		if (Graph && NodeCodeUtils::MatchName(ScopeName, Graph->GetName()))
+		return SearchGraphArray(Blueprint->FunctionGraphs);
+	}
+	if (Type == TEXT("Macro"))
+	{
+		return SearchGraphArray(Blueprint->MacroGraphs);
+	}
+	if (Type == TEXT("EventGraph"))
+	{
+		if (Name.IsEmpty() && Blueprint->UbergraphPages.Num() > 0)
 		{
-			return Graph;
+			return Blueprint->UbergraphPages[0];
 		}
-	}
-
-	if (ScopeName.IsEmpty() && Blueprint->UbergraphPages.Num() > 0)
-	{
-		return Blueprint->UbergraphPages[0];
+		return SearchGraphArray(Blueprint->UbergraphPages);
 	}
 
 	return nullptr;
 }
 
-FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIRFromGraph(UEdGraph* Graph, const FString& ScopeName)
+FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIR(UEdGraph* Graph)
 {
 	FNodeCodeGraphIR IR;
-	IR.ScopeName = ScopeName;
+	if (!Graph)
+	{
+		return IR;
+	}
 
 	TMap<UEdGraphNode*, int32> NodeToIndex;
 	int32 NodeCounter = 0;
@@ -147,7 +127,7 @@ FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIRFromGraph(UEdGraph* Graph, co
 		NodeIR.Index = NodeCounter;
 		NodeIR.SourceObject = Node;
 		NodeIR.Guid = Node->NodeGuid;
-		NodeIR.ClassName = GetNodeClassName(Node);
+		NodeIR.ClassName = FBlueprintNodeEncoderRegistry::Get().EncodeNode(Node);
 
 		SerializeNodeProperties(Node, NodeIR.Properties);
 		SerializePinDefaults(Node, NodeIR.Properties);
@@ -239,133 +219,13 @@ bool FBlueprintGraphSerializer::ShouldSkipNode(UEdGraphNode* Node)
 	return false;
 }
 
-FString FBlueprintGraphSerializer::GetNodeClassName(UEdGraphNode* Node)
-{
-	if (!Node)
-	{
-		return FString();
-	}
-
-	UClass* NodeClass = Node->GetClass();
-
-	// Semantic encoding only for exact base classes.
-	// Subclasses (e.g. UK2Node_CallParentFunction, UK2Node_ComponentBoundEvent)
-	// fall through to the raw class name at the bottom, and reflection handles their properties.
-
-	if (NodeClass == UK2Node_CallFunction::StaticClass())
-	{
-		UK2Node_CallFunction* CallFunc = CastChecked<UK2Node_CallFunction>(Node);
-		FName FuncName = CallFunc->FunctionReference.GetMemberName();
-		UClass* FuncClass = CallFunc->FunctionReference.GetMemberParentClass();
-		FString EncodedFuncName = NodeCodeUtils::EncodeSpaces(FuncName.ToString());
-		if (FuncClass && !CallFunc->FunctionReference.IsSelfContext())
-		{
-			return FString::Printf(TEXT("CallFunction:%s.%s"), *FuncClass->GetName(), *EncodedFuncName);
-		}
-		return FString::Printf(TEXT("CallFunction:%s"), *EncodedFuncName);
-	}
-
-	if (NodeClass == UK2Node_VariableGet::StaticClass())
-	{
-		UK2Node_VariableGet* VarGet = CastChecked<UK2Node_VariableGet>(Node);
-		FName VarName = VarGet->VariableReference.GetMemberName();
-		return FString::Printf(TEXT("VariableGet:%s"), *NodeCodeUtils::EncodeSpaces(VarName.ToString()));
-	}
-
-	if (NodeClass == UK2Node_VariableSet::StaticClass())
-	{
-		UK2Node_VariableSet* VarSet = CastChecked<UK2Node_VariableSet>(Node);
-		FName VarName = VarSet->VariableReference.GetMemberName();
-		return FString::Printf(TEXT("VariableSet:%s"), *NodeCodeUtils::EncodeSpaces(VarName.ToString()));
-	}
-
-	if (NodeClass == UK2Node_CustomEvent::StaticClass())
-	{
-		UK2Node_CustomEvent* CustomEvent = CastChecked<UK2Node_CustomEvent>(Node);
-		return FString::Printf(TEXT("CustomEvent:%s"), *NodeCodeUtils::EncodeSpaces(CustomEvent->CustomFunctionName.ToString()));
-	}
-
-	if (NodeClass == UK2Node_Event::StaticClass())
-	{
-		UK2Node_Event* Event = CastChecked<UK2Node_Event>(Node);
-		FName EventName = Event->EventReference.GetMemberName();
-		if (!EventName.IsNone())
-		{
-			return FString::Printf(TEXT("Event:%s"), *NodeCodeUtils::EncodeSpaces(EventName.ToString()));
-		}
-		if (!Event->CustomFunctionName.IsNone())
-		{
-			return FString::Printf(TEXT("Event:%s"), *NodeCodeUtils::EncodeSpaces(Event->CustomFunctionName.ToString()));
-		}
-	}
-
-	if (Cast<UK2Node_FunctionEntry>(Node))
-	{
-		return TEXT("FunctionEntry");
-	}
-
-	if (Cast<UK2Node_FunctionResult>(Node))
-	{
-		return TEXT("FunctionResult");
-	}
-
-	return NodeClass->GetName();
-}
-
-const TSet<FName>& GetBaseClassSkipProperties()
-{
-	static TSet<FName> SkipSet;
-	if (SkipSet.Num() == 0)
-	{
-		SkipSet.Add(TEXT("NodePosX"));
-		SkipSet.Add(TEXT("NodePosY"));
-		SkipSet.Add(TEXT("NodeWidth"));
-		SkipSet.Add(TEXT("NodeHeight"));
-		SkipSet.Add(TEXT("NodeGuid"));
-		SkipSet.Add(TEXT("NodeComment"));
-		SkipSet.Add(TEXT("ErrorType"));
-		SkipSet.Add(TEXT("ErrorMsg"));
-		SkipSet.Add(TEXT("bHasCompilerMessage"));
-		SkipSet.Add(TEXT("bCommentBubblePinned"));
-		SkipSet.Add(TEXT("bCommentBubbleVisible"));
-		SkipSet.Add(TEXT("bCommentBubbleMakeVisible"));
-		SkipSet.Add(TEXT("bCanRenameNode"));
-		SkipSet.Add(TEXT("bCanResizeNode"));
-		SkipSet.Add(TEXT("bDisplayAsDisabled"));
-		SkipSet.Add(TEXT("bUserSetEnabledState"));
-		SkipSet.Add(TEXT("bIsNodeEnabled_DEPRECATED"));
-		SkipSet.Add(TEXT("bIsIntermediateNode"));
-		SkipSet.Add(TEXT("AdvancedPinDisplay"));
-		SkipSet.Add(TEXT("EnabledState"));
-		SkipSet.Add(TEXT("DeprecatedPins"));
-		SkipSet.Add(TEXT("NodeUpgradeMessage"));
-		// CallFunction internals derived from the function reference
-		SkipSet.Add(TEXT("bDefaultsToPureFunc"));
-		SkipSet.Add(TEXT("bWantsEnumToExecExpansion"));
-		SkipSet.Add(TEXT("bIsPureFunc"));
-		SkipSet.Add(TEXT("bIsConstFunc"));
-		SkipSet.Add(TEXT("bIsInterfaceCall"));
-		SkipSet.Add(TEXT("bIsFinalFunction"));
-		SkipSet.Add(TEXT("bIsBeadFunction"));
-		SkipSet.Add(TEXT("NodePurityOverride"));
-		// Deprecated fields
-		SkipSet.Add(TEXT("CallFunctionName_DEPRECATED"));
-		SkipSet.Add(TEXT("CallFunctionClass_DEPRECATED"));
-		SkipSet.Add(TEXT("EventSignatureName_DEPRECATED"));
-		SkipSet.Add(TEXT("EventSignatureClass_DEPRECATED"));
-		SkipSet.Add(TEXT("VariableSourceClass_DEPRECATED"));
-		SkipSet.Add(TEXT("VariableName_DEPRECATED"));
-	}
-	return SkipSet;
-}
-
 void FBlueprintGraphSerializer::SerializeNodeProperties(
 	UEdGraphNode* Node,
 	TMap<FString, FString>& OutProperties)
 {
 	UClass* NodeClass = Node->GetClass();
 	UObject* CDO = NodeClass->GetDefaultObject();
-	const TSet<FName>& SkipSet = GetBaseClassSkipProperties();
+	const TSet<FName>& SkipSet = FNodeCodePropertyUtils::GetEdGraphNodeSkipSet();
 
 	for (TFieldIterator<FProperty> PropIt(NodeClass); PropIt; ++PropIt)
 	{
