@@ -39,7 +39,7 @@ public class UnrealClientProtocolEditor : ModuleRules
 			"AssetRegistry",
 			"AssetTools",
 			"Niagara",
-			"NiagaraEditor",
+			"NiagaraEditor", "Niagara",
 		});
 	}
 }

@@ -110,4 +110,25 @@ public:
 		UPARAM(DisplayName = "Content Folder Path") const FString& FolderPath,
 		UPARAM(DisplayName = "Include Subfolders") bool bIncludeSubfolders,
 		TArray<FSoftObjectPath>& OutSoftPaths);
+
+	/**
+	 * 简化版路径查找：仅传入内容根长路径（如 /Game/MyFolder 或 /PluginName/Sub），递归枚举该路径下全部资产的软引用路径。
+	 * 等价于 GatherAssetSoftPathsUnderContentFolderPath(ContentFolderPath, true, OutSoftPaths)，无 bIncludeSubfolders 等额外参数。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UCP|Asset|Editor", meta = (DisplayName = "Gather Asset Soft Paths Under Path (Simple)"))
+	static void GatherAssetSoftPathsUnderContentPathSimple(
+		UPARAM(DisplayName = "Content Folder Path") const FString& ContentFolderPath,
+		TArray<FSoftObjectPath>& OutSoftPaths);
+
+	/**
+	 * 简化版「路径 + 关键词」查找：在指定内容根下按名称搜索（SearchEverywhere 风格 Query），Scope 固定为 CustomPackagePath，子文件夹递归。
+	 * 参数与 GatherAssetSoftPathsBySearchQueryInAllContent 类似，但多一个 ContentFolderPath，用于已知文件夹时的轻量调用。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UCP|Asset|Editor", meta = (DisplayName = "Gather Asset Soft Paths By Search Query Under Path (Simple)"))
+	static void GatherAssetSoftPathsBySearchQueryUnderContentPath(
+		UPARAM(DisplayName = "Content Folder Path") const FString& ContentFolderPath,
+		const FString& Query,
+		int32 MaxResults,
+		TArray<FSoftObjectPath>& OutSoftPaths,
+		TArray<FString>& OutIncludeTokensForHighlight);
 };

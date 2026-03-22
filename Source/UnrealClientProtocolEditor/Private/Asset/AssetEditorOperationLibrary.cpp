@@ -10,7 +10,6 @@
 #include "ObjectTools.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
-#include "UObject/UObjectGlobals.h"
 
 TScriptInterface<IAssetRegistry> UAssetEditorOperationLibrary::GetAssetRegistry()
 {
@@ -793,4 +792,26 @@ void UAssetEditorOperationLibrary::GatherAssetSoftPathsUnderContentFolderPath(co
 	{
 		OutSoftPaths.Add(Data.GetSoftObjectPath());
 	}
+}
+
+void UAssetEditorOperationLibrary::GatherAssetSoftPathsUnderContentPathSimple(const FString& ContentFolderPath, TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	GatherAssetSoftPathsUnderContentFolderPath(ContentFolderPath, true, OutSoftPaths);
+}
+
+void UAssetEditorOperationLibrary::GatherAssetSoftPathsBySearchQueryUnderContentPath(
+	const FString& ContentFolderPath,
+	const FString& Query,
+	int32 MaxResults,
+	TArray<FSoftObjectPath>& OutSoftPaths,
+	TArray<FString>& OutIncludeTokensForHighlight)
+{
+	OutSoftPaths.Reset();
+	OutIncludeTokensForHighlight.Reset();
+	if (ContentFolderPath.TrimStartAndEnd().IsEmpty())
+	{
+		return;
+	}
+	GatherAssetSoftPathsBySearchQuery(Query, EUCPAssetSearchScope::CustomPackagePath, FString(), false, false, MaxResults, 1, ContentFolderPath,
+		OutSoftPaths, OutIncludeTokensForHighlight);
 }

@@ -30,6 +30,14 @@ The CLI `scripts/UCP.py` **only reads one JSON value from standard input**. It d
 3. **Parameter name**: The Blueprint parameter is **`AssetPath`** (not a truncated `Ass…`). Typos in JSON keys are ignored or wrong → empty or wrong behavior.
 4. **Dependency graph**: Results reflect **saved** on-disk references; save assets in the editor if results look stale.
 
+### Asset discovery workflow (path first, then global)
+
+When looking for assets by **folder path** and/or **name**:
+
+1. **If you know the content folder path** (long package path such as `/Game/...` or `/PluginName/...`): **first** use the simplified path APIs—**`GatherAssetSoftPathsUnderContentPathSimple`** (enumerate everything under that path, recursive) or **`GatherAssetSoftPathsBySearchQueryUnderContentPath`** (same SearchEverywhere-style `Query` as global search, but scoped to that path only). Prefer these over the full **`GatherAssetSoftPathsBySearchQuery`** when you do not need `Scope` / `ClassFilter` / `MinCharacters` / `bWholeWord` knobs.
+2. **If you only have a name or keyword** and no reliable path, or path-scoped search returned nothing useful, call **`GatherAssetSoftPathsBySearchQueryInAllContent`** (all content roots, including plugin mounts).
+3. **Never** tell the user that **no asset exists** based solely on **path-only** or **path-scoped** search returning an empty list. You must **also** run a **global** search (`GatherAssetSoftPathsBySearchQueryInAllContent` with the same name/query) before concluding absence—unless the user explicitly asked to search **only** that folder and nowhere else.
+
 ## Custom Function Library
 
 ### UAssetEditorOperationLibrary (Editor)
@@ -56,6 +64,8 @@ The CLI `scripts/UCP.py` **only reads one JSON value from standard input**. It d
 | `GatherAssetSoftPathsBySearchQuery` | `Query`, `Scope`, `ClassFilter`, `bCaseSensitive`, `bWholeWord`, `MaxResults`, `MinCharacters`, `CustomPackagePath`, `OutSoftPaths`, `OutIncludeTokensForHighlight` | void | Keyword search (same rules as SearchEverywhere). **`Scope`=`CustomPackagePath`** + **`CustomPackagePath`** = search only under that content root (recursive subfolders). `Scope` = `AllAssets` / `Project` / `CustomPackagePath` as above. |
 | `GatherAssetSoftPathsBySearchQueryInAllContent` | `Query`, `MaxResults`, `OutSoftPaths`, `OutIncludeTokensForHighlight` | void | Same as `GatherAssetSoftPathsBySearchQuery` with **Scope = AllAssets** (includes plugin mounts), `MinCharacters=1`, no class filter, case-insensitive, substring match. Use when you want to find a named asset by keyword without restricting to `/Game` only. |
 | `GatherAssetSoftPathsUnderContentFolderPath` | `FolderPath`, `bIncludeSubfolders`, `OutSoftPaths` | void | Lists **all assets** under a **long content path** (`/Game/...`, `/PluginName/...`). **`bIncludeSubfolders` = true** → includes assets in **nested** folders (`FARFilter::bRecursivePaths`). **`false`** → only non-recursive scope (no subfolders). **Does not load** assets; registry only. |
+| `GatherAssetSoftPathsUnderContentPathSimple` | `ContentFolderPath`, `OutSoftPaths` | void | **Simplified path listing**: only the folder path; always **recursive** (same as `GatherAssetSoftPathsUnderContentFolderPath` with `bIncludeSubfolders: true`). Use when the path is known and you want the smallest parameter surface. |
+| `GatherAssetSoftPathsBySearchQueryUnderContentPath` | `ContentFolderPath`, `Query`, `MaxResults`, `OutSoftPaths`, `OutIncludeTokensForHighlight` | void | **Simplified path + keyword**: SearchEverywhere-style `Query` restricted to **`CustomPackagePath` = `ContentFolderPath`** (recursive). Same defaults spirit as `GatherAssetSoftPathsBySearchQueryInAllContent` (`MinCharacters=1`, etc.) without exposing `Scope` / `ClassFilter` / `bWholeWord`. |
 
 #### Getting the AssetRegistry
 
@@ -128,6 +138,8 @@ These functions live on the same CDO as `GetAssetRegistry`: `/Script/UnrealClien
 - **`GatherAssetSoftPathsBySearchQuery`**: Query language matches the Search Everywhere plugin: split on spaces; tokens starting with `!` are **excluded** from the asset **name**; a token `&Type=Foo` filters by **asset class name** substring (case-insensitive); remaining tokens must all match the asset name (substring or whole-word per flags). At least one include token **or** a `&Type=` filter is required; if include tokens exist, each must be at least `MinCharacters` long. `ClassFilter` may restrict to a native class path starting with `/Script/` (same as the original implementation). `Scope` is `EUCPAssetSearchScope`: `AllAssets` (all content roots), `Project` (`/Game` only), or **`CustomPackagePath`** — **to search only under one content folder**, set **`Scope` to `CustomPackagePath`** and set **`CustomPackagePath`** to that folder’s **long package path** (e.g. `/Game/Blueprints/Interactable` or `/PluginName/SubFolder`). The filter uses **`bRecursivePaths`**, so **all subfolders** under that path are included. If `CustomPackagePath` is left empty while `Scope` is `CustomPackagePath`, behavior falls back to **`/Game`**.
 - **`GatherAssetSoftPathsBySearchQueryInAllContent`**: Shortcut to search by asset **name** across **all** content roots (including plugin mounts), with fixed defaults (`AllAssets`, `MinCharacters=1`, case-insensitive, substring). Prefer this over `Scope: Project` when the asset might not live under `/Game`.
 - **`GatherAssetSoftPathsUnderContentFolderPath`**: Enumerates every asset under the given **content folder path** (long package path style) and returns **`FSoftObjectPath`** strings. **`bIncludeSubfolders`** maps to **`FARFilter::bRecursivePaths`**: `true` includes packages under nested folders; `false` only the non-recursive filter (no assets in child content paths). **Not** a keyword filter—use `GatherAssetSoftPathsBySearchQuery` if you need name matching. Path is normalized (trim, optional leading `/`, trailing `/` stripped except root).
+- **`GatherAssetSoftPathsUnderContentPathSimple`**: Same as **`GatherAssetSoftPathsUnderContentFolderPath`** with **`bIncludeSubfolders` fixed to `true`**; only **`ContentFolderPath`** + **`OutSoftPaths`**. Prefer when the workflow calls for **path-first** discovery (see **Asset discovery workflow** above).
+- **`GatherAssetSoftPathsBySearchQueryUnderContentPath`**: Keyword search with **`Scope` = `CustomPackagePath`** and **`CustomPackagePath` = `ContentFolderPath`**; same query parsing as **`GatherAssetSoftPathsBySearchQuery`**, with **`MinCharacters=1`** and defaults aligned to the global shortcut. Use when you know the folder but need a **name filter** without building a full `GatherAssetSoftPathsBySearchQuery` parameter list.
 
 **Example: derived blueprint classes as soft paths (no loading)**
 
@@ -175,6 +187,18 @@ These functions live on the same CDO as `GetAssetRegistry`: `/Script/UnrealClien
 
 ```json
 {"type":"call","object":"/Script/UnrealClientProtocolEditor.Default__AssetEditorOperationLibrary","function":"GatherAssetSoftPathsUnderContentFolderPath","params":{"FolderPath":"/Game/Blueprints/Interactable","bIncludeSubfolders":false,"OutSoftPaths":[]}}
+```
+
+**Example: simplified path listing (recursive — same as `bIncludeSubfolders: true`, fewer parameters)**
+
+```json
+{"type":"call","object":"/Script/UnrealClientProtocolEditor.Default__AssetEditorOperationLibrary","function":"GatherAssetSoftPathsUnderContentPathSimple","params":{"ContentFolderPath":"/Game/Blueprints/Interactable","OutSoftPaths":[]}}
+```
+
+**Example: simplified path + keyword (search under one content root only)**
+
+```json
+{"type":"call","object":"/Script/UnrealClientProtocolEditor.Default__AssetEditorOperationLibrary","function":"GatherAssetSoftPathsBySearchQueryUnderContentPath","params":{"ContentFolderPath":"/LocomotionDriver/TheLastOfUs/Ellie","Query":"Door","MaxResults":50,"OutSoftPaths":[],"OutIncludeTokensForHighlight":[]}}
 ```
 
 **Example: dependencies after you know the exact soft path** (from Content Browser → Copy Reference, or from the search result above)
