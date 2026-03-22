@@ -60,11 +60,11 @@ FNodeCodeDiffResult FNiagaraGraphDiffer::Apply(UNiagaraGraph* Graph, ENiagaraScr
 		if (OldGraphNode->IsA<UNiagaraNodeOutput>()) continue;
 
 		Graph->RemoveNode(OldGraphNode);
-		Result.NodesRemoved.Add(FString::Printf(TEXT("N%d %s"), OldNode.Index, *OldNode.ClassName));
+		Result.NodesRemoved.Add(FString::Printf(TEXT("N_%s %s"), *OldNode.Index, *OldNode.ClassName));
 	}
 
 	// Phase 2: Create new nodes
-	TMap<int32, UEdGraphNode*> NewIndexToNode;
+	TMap<FString, UEdGraphNode*> NewIndexToNode;
 
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
@@ -80,7 +80,7 @@ FNodeCodeDiffResult FNiagaraGraphDiffer::Apply(UNiagaraGraph* Graph, ENiagaraScr
 			if (CreatedNode)
 			{
 				NewIndexToNode.Add(NewNode.Index, CreatedNode);
-				Result.NodesAdded.Add(FString::Printf(TEXT("N%d %s"), NewNode.Index, *NewNode.ClassName));
+				Result.NodesAdded.Add(FString::Printf(TEXT("N_%s %s"), *NewNode.Index, *NewNode.ClassName));
 			}
 			else
 			{
@@ -120,7 +120,7 @@ FNodeCodeDiffResult FNiagaraGraphDiffer::Apply(UNiagaraGraph* Graph, ENiagaraScr
 			ApplyPropertyChanges(GraphNode, NewNode.Properties, Changes);
 			if (Changes.Num() > 0)
 			{
-				Result.NodesModified.Add(FString::Printf(TEXT("N%d: %s"), NewNode.Index, *FString::Join(Changes, TEXT("; "))));
+				Result.NodesModified.Add(FString::Printf(TEXT("N_%s: %s"), *NewNode.Index, *FString::Join(Changes, TEXT("; "))));
 			}
 		}
 	}
@@ -136,7 +136,7 @@ FNodeCodeDiffResult FNiagaraGraphDiffer::Apply(UNiagaraGraph* Graph, ENiagaraScr
 		UEdGraphNode** FromNodePtr = NewIndexToNode.Find(Link.FromNodeIndex);
 		if (!FromNodePtr || !*FromNodePtr)
 		{
-			UE_LOG(LogNiagaraDiffer, Warning, TEXT("Link skip: FromNode N%d not found in NewIndexToNode"), Link.FromNodeIndex);
+			UE_LOG(LogNiagaraDiffer, Warning, TEXT("Link skip: FromNode N_%s not found in NewIndexToNode"), *Link.FromNodeIndex);
 			continue;
 		}
 
@@ -155,7 +155,7 @@ FNodeCodeDiffResult FNiagaraGraphDiffer::Apply(UNiagaraGraph* Graph, ENiagaraScr
 			if (ToNodePtr) ToNode = *ToNodePtr;
 			if (!ToNode)
 			{
-				UE_LOG(LogNiagaraDiffer, Warning, TEXT("Link skip: ToNode N%d not found in NewIndexToNode"), Link.ToNodeIndex);
+				UE_LOG(LogNiagaraDiffer, Warning, TEXT("Link skip: ToNode N_%s not found in NewIndexToNode"), *Link.ToNodeIndex);
 			}
 		}
 		if (!ToNode) continue;

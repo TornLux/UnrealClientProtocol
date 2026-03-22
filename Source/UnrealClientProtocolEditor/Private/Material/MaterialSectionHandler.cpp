@@ -7,6 +7,7 @@
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
+#include "Materials/MaterialExpression.h"
 
 static const FString MaterialType = TEXT("Material");
 static const FString CompositeType = TEXT("Composite");
@@ -134,4 +135,31 @@ bool FMaterialSectionHandler::CreateSection(UObject* Asset, const FString& Type,
 bool FMaterialSectionHandler::RemoveSection(UObject* Asset, const FString& Type, const FString& Name)
 {
 	return false;
+}
+
+UObject* FMaterialSectionHandler::FindNodeByGuid(UObject* Asset, const FGuid& Guid)
+{
+	auto SearchExpressions = [&Guid](TArrayView<const TObjectPtr<UMaterialExpression>> Expressions) -> UObject*
+	{
+		for (const auto& Expr : Expressions)
+		{
+			if (Expr && Expr->MaterialExpressionGuid == Guid)
+			{
+				return Expr.Get();
+			}
+		}
+		return nullptr;
+	};
+
+	if (UMaterial* Material = Cast<UMaterial>(Asset))
+	{
+		return SearchExpressions(Material->GetExpressions());
+	}
+
+	if (UMaterialFunction* MaterialFunction = Cast<UMaterialFunction>(Asset))
+	{
+		return SearchExpressions(MaterialFunction->GetExpressions());
+	}
+
+	return nullptr;
 }

@@ -63,6 +63,22 @@ TArray<FNodeCodeSectionIR> FNodeCodeSectionHandlerRegistry::ListAllSections(UObj
 	return AllSections;
 }
 
+UObject* FNodeCodeSectionHandlerRegistry::FindNodeByGuid(UObject* Asset, const FGuid& Guid) const
+{
+	for (const auto& Handler : Handlers)
+	{
+		if (Handler->CanHandle(Asset, TEXT("")))
+		{
+			UObject* Found = Handler->FindNodeByGuid(Asset, Guid);
+			if (Found)
+			{
+				return Found;
+			}
+		}
+	}
+	return nullptr;
+}
+
 ENodeCodeSectionFormat FNodeCodeSectionHandlerRegistry::GetSectionFormat(const FString& TypeName) const
 {
 	if (const ENodeCodeSectionFormat* Found = TypeFormatMap.Find(TypeName))

@@ -4,6 +4,7 @@
 #include "Niagara/INiagaraNodeEncoder.h"
 #include "NodeCode/NodeCodePropertyUtils.h"
 #include "NodeCode/NodeCodeClassCache.h"
+#include "NodeCode/NodeCodeTypes.h"
 
 #include "NiagaraSystem.h"
 #include "NiagaraEmitter.h"
@@ -153,15 +154,15 @@ FNodeCodeGraphIR FNiagaraGraphSerializer::BuildIR(UNiagaraGraph* Graph, ENiagara
 
 	if (Traversal.Num() == 0) return IR;
 
-	TMap<UNiagaraNode*, int32> NodeToIndex;
+	TMap<UNiagaraNode*, FString> NodeToIndex;
 
 	for (UNiagaraNode* Node : Traversal)
 	{
-		int32 Index = IR.Nodes.Num();
-		NodeToIndex.Add(Node, Index);
+		FString NodeId = NodeCodeUtils::GuidToBase62(Node->NodeGuid);
+		NodeToIndex.Add(Node, NodeId);
 
 		FNodeCodeNodeIR NodeIR;
-		NodeIR.Index = Index;
+		NodeIR.Index = NodeId;
 		NodeIR.ClassName = FNiagaraNodeEncoderRegistry::Get().EncodeNode(Node);
 		NodeIR.Guid = Node->NodeGuid;
 		NodeIR.SourceObject = Node;
@@ -175,7 +176,7 @@ FNodeCodeGraphIR FNiagaraGraphSerializer::BuildIR(UNiagaraGraph* Graph, ENiagara
 
 	for (UNiagaraNode* Node : Traversal)
 	{
-		int32 FromIndex = NodeToIndex[Node];
+		FString FromIndex = NodeToIndex[Node];
 
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
@@ -186,7 +187,7 @@ FNodeCodeGraphIR FNiagaraGraphSerializer::BuildIR(UNiagaraGraph* Graph, ENiagara
 				UNiagaraNode* LinkedNode = Cast<UNiagaraNode>(LinkedPin->GetOwningNode());
 				if (!LinkedNode) continue;
 
-				int32* ToIndexPtr = NodeToIndex.Find(LinkedNode);
+				FString* ToIndexPtr = NodeToIndex.Find(LinkedNode);
 				if (!ToIndexPtr) continue;
 
 				FNodeCodeLinkIR Link;

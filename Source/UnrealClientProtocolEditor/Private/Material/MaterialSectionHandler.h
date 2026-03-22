@@ -14,4 +14,5 @@ public:
 	virtual FNodeCodeDiffResult Write(UObject* Asset, const FNodeCodeSectionIR& Section) override;
 	virtual bool CreateSection(UObject* Asset, const FString& Type, const FString& Name) override;
 	virtual bool RemoveSection(UObject* Asset, const FString& Type, const FString& Name) override;
+	virtual UObject* FindNodeByGuid(UObject* Asset, const FGuid& Guid) override;
 };

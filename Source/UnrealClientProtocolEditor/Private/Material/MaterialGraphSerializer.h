@@ -23,16 +23,16 @@ public:
 
 	static TMap<FString, FString> ReadMaterialProperties(UMaterial* Material);
 
+	static void CollectAllConnectedNodes(
+		UMaterial* Material,
+		TSet<UMaterialExpression*>& OutReachable);
+
 private:
 	static FNodeCodeGraphIR BuildIRFromExpressions(
 		TConstArrayView<TObjectPtr<UMaterialExpression>> AllExpressions,
 		UMaterial* Material,
 		UMaterialFunction* MaterialFunction,
 		UMaterialExpressionComposite* TargetComposite);
-
-	static void CollectAllConnectedNodes(
-		UMaterial* Material,
-		TSet<UMaterialExpression*>& OutReachable);
 
 	static void CollectReachableNodes(
 		UMaterialExpression* StartExpr,

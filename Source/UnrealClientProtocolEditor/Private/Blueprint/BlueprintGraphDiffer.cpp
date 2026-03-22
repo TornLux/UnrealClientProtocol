@@ -72,12 +72,12 @@ FNodeCodeDiffResult FBlueprintGraphDiffer::Apply(UBlueprint* Blueprint, UEdGraph
 				continue;
 			}
 			Graph->RemoveNode(OldGraphNode);
-			Result.NodesRemoved.Add(FString::Printf(TEXT("N%d %s"), OldNode.Index, *OldNode.ClassName));
+			Result.NodesRemoved.Add(FString::Printf(TEXT("N_%s %s"), *OldNode.Index, *OldNode.ClassName));
 		}
 	}
 
 	// Phase 2: Create
-	TMap<int32, UEdGraphNode*> NewIndexToNode;
+	TMap<FString, UEdGraphNode*> NewIndexToNode;
 
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
@@ -93,7 +93,7 @@ FNodeCodeDiffResult FBlueprintGraphDiffer::Apply(UBlueprint* Blueprint, UEdGraph
 			if (CreatedNode)
 			{
 				NewIndexToNode.Add(NewNode.Index, CreatedNode);
-				Result.NodesAdded.Add(FString::Printf(TEXT("N%d %s"), NewNode.Index, *NewNode.ClassName));
+				Result.NodesAdded.Add(FString::Printf(TEXT("N_%s %s"), *NewNode.Index, *NewNode.ClassName));
 			}
 			else
 			{
@@ -142,8 +142,8 @@ FNodeCodeDiffResult FBlueprintGraphDiffer::Apply(UBlueprint* Blueprint, UEdGraph
 
 			if (Changes.Num() > 0)
 			{
-				Result.NodesModified.Add(FString::Printf(TEXT("N%d: %s"),
-					NewNode.Index, *FString::Join(Changes, TEXT("; "))));
+				Result.NodesModified.Add(FString::Printf(TEXT("N_%s: %s"),
+					*NewNode.Index, *FString::Join(Changes, TEXT("; "))));
 			}
 		}
 	}
@@ -184,11 +184,11 @@ FNodeCodeDiffResult FBlueprintGraphDiffer::Apply(UBlueprint* Blueprint, UEdGraph
 		{
 			if (!FromPin)
 			{
-				UE_LOG(LogUCPBlueprint, Warning, TEXT("WriteGraph: Output pin '%s' not found on N%d"), *Link.FromOutputName, Link.FromNodeIndex);
+				UE_LOG(LogUCPBlueprint, Warning, TEXT("WriteGraph: Output pin '%s' not found on N_%s"), *Link.FromOutputName, *Link.FromNodeIndex);
 			}
 			if (!ToPin)
 			{
-				UE_LOG(LogUCPBlueprint, Warning, TEXT("WriteGraph: Input pin '%s' not found on N%d"), *Link.ToInputName, Link.ToNodeIndex);
+				UE_LOG(LogUCPBlueprint, Warning, TEXT("WriteGraph: Input pin '%s' not found on N_%s"), *Link.ToInputName, *Link.ToNodeIndex);
 			}
 			continue;
 		}

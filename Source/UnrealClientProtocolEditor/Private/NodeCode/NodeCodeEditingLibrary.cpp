@@ -4,6 +4,7 @@
 #include "NodeCode/INodeCodeSectionHandler.h"
 #include "NodeCode/NodeCodeTextFormat.h"
 #include "NodeCode/NodeCodeClassCache.h"
+#include "NodeCode/NodeCodeTypes.h"
 
 #include "Blueprint/BlueprintSectionHandler.h"
 #include "Material/MaterialSectionHandler.h"
@@ -207,7 +208,33 @@ FString UNodeCodeEditingLibrary::WriteGraph(const FString& AssetPath, const FStr
 		CombinedResult.NodesModified.Append(SectionResult.NodesModified);
 		CombinedResult.LinksAdded.Append(SectionResult.LinksAdded);
 		CombinedResult.LinksRemoved.Append(SectionResult.LinksRemoved);
+		CombinedResult.CompileErrors.Append(SectionResult.CompileErrors);
 	}
 
 	return FNodeCodeTextFormat::DiffResultToJson(CombinedResult);
+}
+
+FString UNodeCodeEditingLibrary::ResolveNodeId(const FString& AssetPath, const FString& NodeId)
+{
+	UObject* Asset = LoadAsset(AssetPath);
+	if (!Asset)
+	{
+		UE_LOG(LogNodeCodeEditing, Error, TEXT("ResolveNodeId: Asset not found: %s"), *AssetPath);
+		return FString();
+	}
+
+	FGuid Guid = NodeCodeUtils::Base62ToGuid(NodeId);
+	if (!Guid.IsValid())
+	{
+		UE_LOG(LogNodeCodeEditing, Error, TEXT("ResolveNodeId: Invalid NodeId: %s"), *NodeId);
+		return FString();
+	}
+
+	UObject* Found = FNodeCodeSectionHandlerRegistry::Get().FindNodeByGuid(Asset, Guid);
+	if (Found)
+	{
+		return Found->GetPathName();
+	}
+
+	return FString();
 }

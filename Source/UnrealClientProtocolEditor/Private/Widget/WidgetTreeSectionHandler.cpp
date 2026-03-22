@@ -4,6 +4,9 @@
 #include "Widget/WidgetTreeSerializer.h"
 
 #include "WidgetBlueprint.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/Widget.h"
+#include "UObject/LazyObjectPtr.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUCPWidgetHandler, Log, All);
 
@@ -84,4 +87,26 @@ bool FWidgetTreeSectionHandler::CreateSection(UObject* Asset, const FString& Typ
 bool FWidgetTreeSectionHandler::RemoveSection(UObject* Asset, const FString& Type, const FString& Name)
 {
 	return false;
+}
+
+UObject* FWidgetTreeSectionHandler::FindNodeByGuid(UObject* Asset, const FGuid& Guid)
+{
+	UWidgetBlueprint* WidgetBP = Cast<UWidgetBlueprint>(Asset);
+	if (!WidgetBP || !WidgetBP->WidgetTree)
+	{
+		return nullptr;
+	}
+
+	UObject* FoundWidget = nullptr;
+	WidgetBP->WidgetTree->ForEachWidget([&Guid, &FoundWidget](UWidget* Widget)
+	{
+		if (!Widget || FoundWidget) return;
+		FUniqueObjectGuid WidgetGuid = FUniqueObjectGuid::GetOrCreateIDForObject(Widget);
+		if (WidgetGuid.IsValid() && WidgetGuid.GetGuid() == Guid)
+		{
+			FoundWidget = Widget;
+		}
+	});
+
+	return FoundWidget;
 }
