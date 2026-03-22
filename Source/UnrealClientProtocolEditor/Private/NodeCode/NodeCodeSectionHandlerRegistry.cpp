@@ -13,6 +13,11 @@ void FNodeCodeSectionHandlerRegistry::Register(TSharedPtr<INodeCodeSectionHandle
 	if (Handler.IsValid())
 	{
 		Handlers.Add(Handler);
+
+		for (const FNodeCodeSectionTypeInfo& Info : Handler->GetSupportedSectionTypes())
+		{
+			TypeFormatMap.Add(Info.TypeName, Info.Format);
+		}
 	}
 }
 
@@ -50,5 +55,19 @@ TArray<FNodeCodeSectionIR> FNodeCodeSectionHandlerRegistry::ListAllSections(UObj
 		AllSections.Append(Sections);
 	}
 
+	for (FNodeCodeSectionIR& S : AllSections)
+	{
+		S.Format = GetSectionFormat(S.Type);
+	}
+
 	return AllSections;
+}
+
+ENodeCodeSectionFormat FNodeCodeSectionHandlerRegistry::GetSectionFormat(const FString& TypeName) const
+{
+	if (const ENodeCodeSectionFormat* Found = TypeFormatMap.Find(TypeName))
+	{
+		return *Found;
+	}
+	return ENodeCodeSectionFormat::Graph;
 }

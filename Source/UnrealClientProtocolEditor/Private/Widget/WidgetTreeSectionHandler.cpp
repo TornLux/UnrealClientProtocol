@@ -9,6 +9,13 @@ DEFINE_LOG_CATEGORY_STATIC(LogUCPWidgetHandler, Log, All);
 
 static const FString WidgetTreeType = TEXT("WidgetTree");
 
+TArray<FNodeCodeSectionTypeInfo> FWidgetTreeSectionHandler::GetSupportedSectionTypes() const
+{
+	return {
+		{WidgetTreeType, ENodeCodeSectionFormat::RawText}
+	};
+}
+
 bool FWidgetTreeSectionHandler::CanHandle(UObject* Asset, const FString& Type) const
 {
 	if (!Asset || !Asset->IsA<UWidgetBlueprint>())

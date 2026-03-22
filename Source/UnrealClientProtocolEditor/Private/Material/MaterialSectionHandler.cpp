@@ -12,6 +12,15 @@ static const FString MaterialType = TEXT("Material");
 static const FString CompositeType = TEXT("Composite");
 static const FString PropertiesType = TEXT("Properties");
 
+TArray<FNodeCodeSectionTypeInfo> FMaterialSectionHandler::GetSupportedSectionTypes() const
+{
+	return {
+		{PropertiesType, ENodeCodeSectionFormat::Properties},
+		{MaterialType, ENodeCodeSectionFormat::Graph},
+		{CompositeType, ENodeCodeSectionFormat::Graph}
+	};
+}
+
 bool FMaterialSectionHandler::CanHandle(UObject* Asset, const FString& Type) const
 {
 	if (!Asset)

@@ -1,25 +1,15 @@
 // MIT License - Copyright (c) 2025 Italink
 
 #include "Object/ObjectEditorOperationLibrary.h"
+#include "UCPJsonUtils.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
 #include "Misc/ITransaction.h"
-#include "Dom/JsonObject.h"
-#include "Serialization/JsonWriter.h"
-#include "Serialization/JsonSerializer.h"
 #include "ObjectTools.h"
-#include "UObject/UObjectGlobals.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogObjectEditorOp, Log, All);
 
-static FString JsonObjectToString(const TSharedPtr<FJsonObject>& Obj)
-{
-	FString OutputString;
-	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
-		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutputString);
-	FJsonSerializer::Serialize(Obj.ToSharedRef(), Writer);
-	return OutputString;
-}
+using namespace UCPUtils;
 
 FString UObjectEditorOperationLibrary::UndoTransaction(const FString& Keyword)
 {
@@ -36,7 +26,7 @@ FString UObjectEditorOperationLibrary::UndoTransaction(const FString& Keyword)
 			TSharedPtr<FJsonObject> Err = MakeShared<FJsonObject>();
 			Err->SetStringField(TEXT("error"), TEXT("Nothing to undo"));
 			Err->SetStringField(TEXT("keyword"), Keyword);
-			return JsonObjectToString(Err);
+			return JsonToString(Err);
 		}
 		FTransactionContext Ctx = GEditor->Trans->GetUndoContext();
 		FString Title = Ctx.Title.ToString();
@@ -46,7 +36,7 @@ FString UObjectEditorOperationLibrary::UndoTransaction(const FString& Keyword)
 			Err->SetStringField(TEXT("error"), TEXT("Top undo transaction does not match keyword"));
 			Err->SetStringField(TEXT("keyword"), Keyword);
 			Err->SetStringField(TEXT("topTransaction"), Title);
-			return JsonObjectToString(Err);
+			return JsonToString(Err);
 		}
 	}
 
@@ -73,7 +63,7 @@ FString UObjectEditorOperationLibrary::RedoTransaction(const FString& Keyword)
 			TSharedPtr<FJsonObject> Err = MakeShared<FJsonObject>();
 			Err->SetStringField(TEXT("error"), TEXT("Nothing to redo"));
 			Err->SetStringField(TEXT("keyword"), Keyword);
-			return JsonObjectToString(Err);
+			return JsonToString(Err);
 		}
 		FTransactionContext Ctx = GEditor->Trans->GetRedoContext();
 		FString Title = Ctx.Title.ToString();
@@ -83,7 +73,7 @@ FString UObjectEditorOperationLibrary::RedoTransaction(const FString& Keyword)
 			Err->SetStringField(TEXT("error"), TEXT("Top redo transaction does not match keyword"));
 			Err->SetStringField(TEXT("keyword"), Keyword);
 			Err->SetStringField(TEXT("topTransaction"), Title);
-			return JsonObjectToString(Err);
+			return JsonToString(Err);
 		}
 	}
 
@@ -133,7 +123,7 @@ FString UObjectEditorOperationLibrary::GetTransactionState()
 	Result->SetNumberField(TEXT("undoCount"), GEditor->Trans->GetUndoCount());
 	Result->SetNumberField(TEXT("queueLength"), GEditor->Trans->GetQueueLength());
 
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }
 
 bool UObjectEditorOperationLibrary::ForceReplaceReferences(const FString& ReplacementObjectPath, const TArray<FString>& ObjectsToReplacePaths)

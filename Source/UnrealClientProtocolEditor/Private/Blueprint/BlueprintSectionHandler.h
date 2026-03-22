@@ -7,6 +7,7 @@
 class FBlueprintSectionHandler : public INodeCodeSectionHandler
 {
 public:
+	virtual TArray<FNodeCodeSectionTypeInfo> GetSupportedSectionTypes() const override;
 	virtual bool CanHandle(UObject* Asset, const FString& Type) const override;
 	virtual TArray<FNodeCodeSectionIR> ListSections(UObject* Asset) override;
 	virtual FNodeCodeSectionIR Read(UObject* Asset, const FString& Type, const FString& Name) override;
