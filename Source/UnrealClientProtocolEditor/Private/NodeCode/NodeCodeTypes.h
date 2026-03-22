@@ -4,6 +4,13 @@
 
 #include "CoreMinimal.h"
 
+enum class ENodeCodeSectionFormat : uint8
+{
+	Graph,
+	Properties,
+	RawText
+};
+
 struct FNodeCodeNodeIR
 {
 	int32 Index = -1;
@@ -32,17 +39,11 @@ struct FNodeCodeSectionIR
 {
 	FString Type;
 	FString Name;
+	ENodeCodeSectionFormat Format = ENodeCodeSectionFormat::Graph;
 
 	FNodeCodeGraphIR Graph;
-
 	TMap<FString, FString> Properties;
-
-	// For sections with custom text format (e.g. WidgetTree's indentation-based tree)
 	FString RawText;
-
-	bool IsGraphSection() const { return Type != TEXT("Properties") && Type != TEXT("Variables") && Type != TEXT("WidgetTree"); }
-
-	bool IsRawTextSection() const { return Type == TEXT("WidgetTree"); }
 
 	FString GetHeader() const
 	{

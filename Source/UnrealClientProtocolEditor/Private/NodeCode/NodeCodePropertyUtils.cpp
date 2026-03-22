@@ -157,3 +157,27 @@ const TSet<FName>& FNodeCodePropertyUtils::GetWidgetSkipSet()
 	}
 	return SkipSet;
 }
+
+const TSet<FName>& FNodeCodePropertyUtils::GetNiagaraNodeSkipSet()
+{
+	static TSet<FName> SkipSet;
+	if (SkipSet.Num() == 0)
+	{
+		SkipSet.Add(TEXT("ChangeId"));
+		SkipSet.Add(TEXT("FullTitle"));
+		SkipSet.Add(TEXT("Usage"));
+		SkipSet.Add(TEXT("RefreshFromExternalChanges"));
+		SkipSet.Add(TEXT("Signature"));
+		SkipSet.Add(TEXT("FunctionScriptAssetObjectPath"));
+		SkipSet.Add(TEXT("SelectedScriptVersion"));
+		SkipSet.Add(TEXT("PreviousScriptVersion"));
+		SkipSet.Add(TEXT("DebugState"));
+		SkipSet.Add(TEXT("BoundPinNames"));
+		SkipSet.Add(TEXT("PropagatedStaticSwitchParameters"));
+		SkipSet.Add(TEXT("PinOutputToPinDefaultPersistentId"));
+		SkipSet.Add(TEXT("ScriptType"));
+		SkipSet.Add(TEXT("ScriptTypeId"));
+		SkipSet.Add(TEXT("AddedPins"));
+	}
+	return SkipSet;
+}

@@ -8,10 +8,12 @@
 #include "Blueprint/BlueprintSectionHandler.h"
 #include "Material/MaterialSectionHandler.h"
 #include "Widget/WidgetTreeSectionHandler.h"
+#include "Niagara/NiagaraSectionHandler.h"
 
 #include "EdGraph/EdGraphNode.h"
 #include "Materials/MaterialExpression.h"
 #include "Components/Widget.h"
+#include "NiagaraNode.h"
 
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonWriter.h"
@@ -28,11 +30,13 @@ struct FNodeCodeHandlerAutoRegister
 		ClassCache.RegisterBaseClass(UEdGraphNode::StaticClass());
 		ClassCache.RegisterBaseClass(UMaterialExpression::StaticClass());
 		ClassCache.RegisterBaseClass(UWidget::StaticClass());
+		ClassCache.RegisterBaseClass(UNiagaraNode::StaticClass());
 
 		auto& Registry = FNodeCodeSectionHandlerRegistry::Get();
 		Registry.Register(MakeShared<FBlueprintSectionHandler>());
 		Registry.Register(MakeShared<FMaterialSectionHandler>());
 		Registry.Register(MakeShared<FWidgetTreeSectionHandler>());
+		Registry.Register(MakeShared<FNiagaraSectionHandler>());
 	}
 };
 
@@ -80,15 +84,19 @@ FString UNodeCodeEditingLibrary::ReadGraph(const FString& AssetPath, const FStri
 
 	FNodeCodeDocumentIR Document;
 
+	auto& Registry = FNodeCodeSectionHandlerRegistry::Get();
+
 	if (Section.IsEmpty())
 	{
-		TArray<FNodeCodeSectionIR> AllSections = FNodeCodeSectionHandlerRegistry::Get().ListAllSections(Asset);
+		TArray<FNodeCodeSectionIR> AllSections = Registry.ListAllSections(Asset);
 		for (const FNodeCodeSectionIR& SectionInfo : AllSections)
 		{
-			INodeCodeSectionHandler* Handler = FNodeCodeSectionHandlerRegistry::Get().FindHandler(Asset, SectionInfo.Type);
+			INodeCodeSectionHandler* Handler = Registry.FindHandler(Asset, SectionInfo.Type);
 			if (Handler)
 			{
-				Document.Sections.Add(Handler->Read(Asset, SectionInfo.Type, SectionInfo.Name));
+				FNodeCodeSectionIR S = Handler->Read(Asset, SectionInfo.Type, SectionInfo.Name);
+				S.Format = Registry.GetSectionFormat(S.Type);
+				Document.Sections.Add(MoveTemp(S));
 			}
 		}
 	}
@@ -97,10 +105,12 @@ FString UNodeCodeEditingLibrary::ReadGraph(const FString& AssetPath, const FStri
 		FString Type, Name;
 		if (NodeCodeUtils::ParseSectionHeader(FString::Printf(TEXT("[%s]"), *Section), Type, Name))
 		{
-			INodeCodeSectionHandler* Handler = FNodeCodeSectionHandlerRegistry::Get().FindHandler(Asset, Type);
+			INodeCodeSectionHandler* Handler = Registry.FindHandler(Asset, Type);
 			if (Handler)
 			{
-				Document.Sections.Add(Handler->Read(Asset, Type, Name));
+				FNodeCodeSectionIR S = Handler->Read(Asset, Type, Name);
+				S.Format = Registry.GetSectionFormat(S.Type);
+				Document.Sections.Add(MoveTemp(S));
 			}
 			else
 			{
@@ -182,7 +192,7 @@ FString UNodeCodeEditingLibrary::WriteGraph(const FString& AssetPath, const FStr
 			}
 		}
 
-		if (!bSectionExists && SectionIR.IsGraphSection())
+		if (!bSectionExists && SectionIR.Format == ENodeCodeSectionFormat::Graph)
 		{
 			if (!Handler->CreateSection(Asset, SectionIR.Type, SectionIR.Name))
 			{

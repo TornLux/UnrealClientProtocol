@@ -1,6 +1,7 @@
 // MIT License - Copyright (c) 2025 Italink
 
 #include "NodeCode/NodeCodeTextFormat.h"
+#include "NodeCode/INodeCodeSectionHandler.h"
 
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonWriter.h"
@@ -326,17 +327,17 @@ FString FNodeCodeTextFormat::SectionToText(const FNodeCodeSectionIR& Section)
 {
 	FString Result = Section.GetHeader() + TEXT("\n\n");
 
-	if (Section.IsRawTextSection())
+	switch (Section.Format)
 	{
+	case ENodeCodeSectionFormat::RawText:
 		Result += Section.RawText;
-	}
-	else if (Section.IsGraphSection())
-	{
+		break;
+	case ENodeCodeSectionFormat::Graph:
 		Result += GraphToText(Section.Graph);
-	}
-	else
-	{
+		break;
+	case ENodeCodeSectionFormat::Properties:
 		Result += PropertiesToText(Section.Properties);
+		break;
 	}
 
 	return Result;
@@ -363,23 +364,27 @@ FNodeCodeSectionIR FNodeCodeTextFormat::ParseSection(const FString& Text, const 
 	FNodeCodeSectionIR Section;
 	Section.Type = Type;
 	Section.Name = Name;
+	Section.Format = FNodeCodeSectionHandlerRegistry::Get().GetSectionFormat(Type);
 
-	if (Section.IsRawTextSection())
+	switch (Section.Format)
 	{
+	case ENodeCodeSectionFormat::RawText:
 		Section.RawText = Text;
-		return Section;
-	}
-
-	TArray<FString> Lines;
-	Text.ParseIntoArrayLines(Lines);
-
-	if (Section.IsGraphSection())
-	{
-		ParseGraphLines(Lines, Section.Graph);
-	}
-	else
-	{
-		ParsePropertyLines(Lines, Section.Properties);
+		break;
+	case ENodeCodeSectionFormat::Graph:
+		{
+			TArray<FString> Lines;
+			Text.ParseIntoArrayLines(Lines);
+			ParseGraphLines(Lines, Section.Graph);
+		}
+		break;
+	case ENodeCodeSectionFormat::Properties:
+		{
+			TArray<FString> Lines;
+			Text.ParseIntoArrayLines(Lines);
+			ParsePropertyLines(Lines, Section.Properties);
+		}
+		break;
 	}
 
 	return Section;
@@ -407,22 +412,23 @@ FNodeCodeDocumentIR FNodeCodeTextFormat::ParseDocument(const FString& Text)
 		FNodeCodeSectionIR Section;
 		Section.Type = CurrentType;
 		Section.Name = CurrentName;
+		Section.Format = FNodeCodeSectionHandlerRegistry::Get().GetSectionFormat(CurrentType);
 
-		if (Section.IsRawTextSection())
+		switch (Section.Format)
 		{
+		case ENodeCodeSectionFormat::RawText:
 			Section.RawText = FString::Join(CurrentLines, TEXT("\n"));
 			if (!Section.RawText.IsEmpty())
 			{
 				Section.RawText += TEXT("\n");
 			}
-		}
-		else if (Section.IsGraphSection())
-		{
+			break;
+		case ENodeCodeSectionFormat::Graph:
 			ParseGraphLines(CurrentLines, Section.Graph);
-		}
-		else
-		{
+			break;
+		case ENodeCodeSectionFormat::Properties:
 			ParsePropertyLines(CurrentLines, Section.Properties);
+			break;
 		}
 
 		Document.Sections.Add(MoveTemp(Section));

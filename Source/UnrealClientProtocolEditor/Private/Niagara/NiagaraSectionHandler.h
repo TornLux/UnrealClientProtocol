@@ -4,7 +4,7 @@
 
 #include "NodeCode/INodeCodeSectionHandler.h"
 
-class FMaterialSectionHandler : public INodeCodeSectionHandler
+class FNiagaraSectionHandler : public INodeCodeSectionHandler
 {
 public:
 	virtual TArray<FNodeCodeSectionTypeInfo> GetSupportedSectionTypes() const override;

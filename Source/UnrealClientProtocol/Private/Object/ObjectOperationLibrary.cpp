@@ -3,16 +3,13 @@
 #include "Object/ObjectOperationLibrary.h"
 #include "UCPFunctionInvoker.h"
 #include "UCPParamConverter.h"
+#include "UCPJsonUtils.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UnrealType.h"
 #include "UObject/Class.h"
 #include "UObject/Package.h"
-#include "Dom/JsonObject.h"
-#include "Dom/JsonValue.h"
-#include "Serialization/JsonWriter.h"
-#include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
 #include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
@@ -20,14 +17,7 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogObjectOp, Log, All);
 
-static FString JsonObjectToString(const TSharedPtr<FJsonObject>& Obj)
-{
-	FString OutputString;
-	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
-		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutputString);
-	FJsonSerializer::Serialize(Obj.ToSharedRef(), Writer);
-	return OutputString;
-}
+using namespace UCPUtils;
 
 FString UObjectOperationLibrary::GetObjectProperty(const FString& ObjectPath, const FString& PropertyName)
 {
@@ -37,11 +27,7 @@ FString UObjectOperationLibrary::GetObjectProperty(const FString& ObjectPath, co
 		return FString();
 	}
 
-	UObject* Obj = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath);
-	if (!Obj)
-	{
-		Obj = StaticLoadObject(UObject::StaticClass(), nullptr, *ObjectPath);
-	}
+	UObject* Obj = UCPUtils::LoadObject(ObjectPath);
 	if (!Obj)
 	{
 		UE_LOG(LogObjectOp, Error, TEXT("GetObjectProperty: Object not found: %s"), *ObjectPath);
@@ -60,7 +46,7 @@ FString UObjectOperationLibrary::GetObjectProperty(const FString& ObjectPath, co
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetField(PropertyName, JsonVal);
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }
 
 FString UObjectOperationLibrary::SetObjectProperty(const FString& ObjectPath, const FString& PropertyName, const FString& JsonValue)
@@ -71,11 +57,7 @@ FString UObjectOperationLibrary::SetObjectProperty(const FString& ObjectPath, co
 		return FString();
 	}
 
-	UObject* Obj = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath);
-	if (!Obj)
-	{
-		Obj = StaticLoadObject(UObject::StaticClass(), nullptr, *ObjectPath);
-	}
+	UObject* Obj = UCPUtils::LoadObject(ObjectPath);
 	if (!Obj)
 	{
 		UE_LOG(LogObjectOp, Error, TEXT("SetObjectProperty: Object not found: %s"), *ObjectPath);
@@ -132,19 +114,19 @@ FString UObjectOperationLibrary::SetObjectProperty(const FString& ObjectPath, co
 FString UObjectOperationLibrary::DescribeObject(const FString& ObjectPath)
 {
 	TSharedPtr<FJsonObject> Result = FUCPFunctionInvoker::DescribeObject(ObjectPath);
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }
 
 FString UObjectOperationLibrary::DescribeObjectProperty(const FString& ObjectPath, const FString& PropertyName)
 {
 	TSharedPtr<FJsonObject> Result = FUCPFunctionInvoker::DescribeProperty(ObjectPath, PropertyName);
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }
 
 FString UObjectOperationLibrary::DescribeObjectFunction(const FString& ObjectPath, const FString& FunctionName)
 {
 	TSharedPtr<FJsonObject> Result = FUCPFunctionInvoker::DescribeFunction(ObjectPath, FunctionName);
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }
 
 FString UObjectOperationLibrary::FindObjectInstances(const FString& ClassName, int32 Limit)
@@ -185,7 +167,7 @@ FString UObjectOperationLibrary::FindObjectInstances(const FString& ClassName, i
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetArrayField(TEXT("objects"), ObjectPaths);
 	Result->SetNumberField(TEXT("count"), Count);
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }
 
 FString UObjectOperationLibrary::FindDerivedClasses(const FString& ClassName, bool bRecursive, int32 Limit)
@@ -226,7 +208,7 @@ FString UObjectOperationLibrary::FindDerivedClasses(const FString& ClassName, bo
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetArrayField(TEXT("classes"), ClassPaths);
 	Result->SetNumberField(TEXT("count"), Count);
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }
 
 FString UObjectOperationLibrary::ListComponents(const FString& ObjectPath)
@@ -237,11 +219,7 @@ FString UObjectOperationLibrary::ListComponents(const FString& ObjectPath)
 		return FString();
 	}
 
-	UObject* Obj = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath);
-	if (!Obj)
-	{
-		Obj = StaticLoadObject(UObject::StaticClass(), nullptr, *ObjectPath);
-	}
+	UObject* Obj = UCPUtils::LoadObject(ObjectPath);
 	if (!Obj)
 	{
 		UE_LOG(LogObjectOp, Error, TEXT("ListComponents: Object not found: %s"), *ObjectPath);
@@ -287,7 +265,7 @@ FString UObjectOperationLibrary::ListComponents(const FString& ObjectPath)
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetArrayField(TEXT("components"), CompArray);
 	Result->SetNumberField(TEXT("count"), CompArray.Num());
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }
 
 FString UObjectOperationLibrary::FindObjectsByOuter(const FString& OuterPath, const FString& ClassName, int32 Limit)
@@ -298,11 +276,7 @@ FString UObjectOperationLibrary::FindObjectsByOuter(const FString& OuterPath, co
 		return FString();
 	}
 
-	UObject* OuterObj = StaticFindObject(UObject::StaticClass(), nullptr, *OuterPath);
-	if (!OuterObj)
-	{
-		OuterObj = StaticLoadObject(UObject::StaticClass(), nullptr, *OuterPath);
-	}
+	UObject* OuterObj = UCPUtils::LoadObject(OuterPath);
 	if (!OuterObj)
 	{
 		UE_LOG(LogObjectOp, Error, TEXT("FindObjectsByOuter: Outer not found: %s"), *OuterPath);
@@ -345,5 +319,5 @@ FString UObjectOperationLibrary::FindObjectsByOuter(const FString& OuterPath, co
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetArrayField(TEXT("objects"), ObjectArray);
 	Result->SetNumberField(TEXT("count"), Count);
-	return JsonObjectToString(Result);
+	return JsonToString(Result);
 }

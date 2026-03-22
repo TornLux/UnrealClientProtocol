@@ -5,10 +5,18 @@
 #include "CoreMinimal.h"
 #include "NodeCode/NodeCodeTypes.h"
 
+struct FNodeCodeSectionTypeInfo
+{
+	FString TypeName;
+	ENodeCodeSectionFormat Format;
+};
+
 class INodeCodeSectionHandler
 {
 public:
 	virtual ~INodeCodeSectionHandler() = default;
+
+	virtual TArray<FNodeCodeSectionTypeInfo> GetSupportedSectionTypes() const = 0;
 
 	virtual bool CanHandle(UObject* Asset, const FString& Type) const = 0;
 
@@ -34,6 +42,9 @@ public:
 
 	TArray<FNodeCodeSectionIR> ListAllSections(UObject* Asset) const;
 
+	ENodeCodeSectionFormat GetSectionFormat(const FString& TypeName) const;
+
 private:
 	TArray<TSharedPtr<INodeCodeSectionHandler>> Handlers;
+	TMap<FString, ENodeCodeSectionFormat> TypeFormatMap;
 };

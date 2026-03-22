@@ -22,6 +22,16 @@ static const FString FunctionType = TEXT("Function");
 static const FString MacroType = TEXT("Macro");
 static const FString VariablesType = TEXT("Variables");
 
+TArray<FNodeCodeSectionTypeInfo> FBlueprintSectionHandler::GetSupportedSectionTypes() const
+{
+	return {
+		{VariablesType, ENodeCodeSectionFormat::Properties},
+		{EventGraphType, ENodeCodeSectionFormat::Graph},
+		{FunctionType, ENodeCodeSectionFormat::Graph},
+		{MacroType, ENodeCodeSectionFormat::Graph}
+	};
+}
+
 bool FBlueprintSectionHandler::CanHandle(UObject* Asset, const FString& Type) const
 {
 	if (!Asset || !Asset->IsA<UBlueprint>())

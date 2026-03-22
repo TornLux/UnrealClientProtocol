@@ -16,4 +16,6 @@ public:
 	static const TSet<FName>& GetMaterialExpressionSkipSet();
 
 	static const TSet<FName>& GetWidgetSkipSet();
+
+	static const TSet<FName>& GetNiagaraNodeSkipSet();
 };
