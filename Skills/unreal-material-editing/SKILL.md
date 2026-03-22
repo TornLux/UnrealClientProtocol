@@ -57,59 +57,60 @@ The `[Material]` section contains the **entire main graph**. Output pins are exp
 ```
 [Material]
 
-N0 MaterialExpressionTextureSample {Texture:"/Game/Textures/T_Wood_BC"} #ee001122
+N_4kVm2xRp8bNw3yLq9dJs MaterialExpressionTextureSample {Texture:"/Game/Textures/T_Wood_BC"}
   > RGB -> [BaseColor]
-  > A -> N3.A
+  > A -> N_7tHn5cWs1fPx6zMr0gKu.A
 
-N1 MaterialExpressionScalarParameter {ParameterName:"Roughness", DefaultValue:0.5} #ee003344
-  > -> N3.B
+N_9aEo3jXv2hQy8bFt4iLw MaterialExpressionScalarParameter {ParameterName:"Roughness", DefaultValue:0.5}
+  > -> N_7tHn5cWs1fPx6zMr0gKu.B
 
-N2 MaterialExpressionVectorParameter {ParameterName:"EmissiveColor", DefaultValue:{"R":1,"G":0.5,"B":0}} #ee005566
-  > -> N4.A
+N_2dGq6lZx4jSa0cHv8kNy MaterialExpressionVectorParameter {ParameterName:"EmissiveColor", DefaultValue:{"R":1,"G":0.5,"B":0}}
+  > -> N_5fIr7mBz3kTb1eJw9lOa.A
 
-N3 MaterialExpressionMultiply #ee007788
+N_7tHn5cWs1fPx6zMr0gKu MaterialExpressionMultiply
   > -> [Roughness]
 
-N4 MaterialExpressionMultiply #ee009900
+N_5fIr7mBz3kTb1eJw9lOa MaterialExpressionMultiply
   > -> [EmissiveColor]
 
-N5 MaterialExpressionConstant {R:5.0} #ee00aa00
-  > -> N4.B
+N_0hKt8nDc5lUd2gLx6mPb MaterialExpressionConstant {R:5.0}
+  > -> N_5fIr7mBz3kTb1eJw9lOa.B
 
-N6 MaterialExpressionTextureSample {Texture:"/Game/Textures/T_Wood_N"} #ee00bb00
+N_3jMv0pFe7nWf4iNz8oCd MaterialExpressionTextureSample {Texture:"/Game/Textures/T_Wood_N"}
   > -> [Normal]
 
-N7 MaterialExpressionTime
-  > -> N8.A
+N_6lOx2rHg9pYh5kPb1qEf MaterialExpressionTime
+  > -> N_8nQz4tJi0rAj7mRd3sFg.A
 
-N8 MaterialExpressionSine {Period:0}
-  > -> N9.B
+N_8nQz4tJi0rAj7mRd3sFg MaterialExpressionSine {Period:6.283185}
+  > -> N_1pSb6vLk2tCl9oTf5uGh.B
 
-N9 MaterialExpressionMultiply
+N_1pSb6vLk2tCl9oTf5uGh MaterialExpressionMultiply
   > -> [WorldPositionOffset]
 
-N10 MaterialExpressionWorldPosition
-  > -> N9.A
+N_4rUd8xNm3vEn0qVh7wIj MaterialExpressionWorldPosition
+  > -> N_1pSb6vLk2tCl9oTf5uGh.A
 ```
 
-Note how `Time` (N7) and `WorldPosition` (N10) — source-only nodes with no inputs — both have `> ->` lines. Without these lines they would be deleted as orphans.
+Note how `Time` and `WorldPosition` — source-only nodes with no inputs — both have `> ->` lines. Without these lines they would be deleted as orphans.
 
 ### Nodes
 
-- `N<idx>`: local reference ID — **`<idx>` must be a plain integer** (e.g. `N0`, `N1`, `N42`). Letter suffixes like `N3b` or `N40x` are **not valid** and will cause parse errors or misrouted connections.
+- `N_<id>`: node reference ID. Two forms:
+  - **Existing nodes**: `N_<base62>` — a 22-character Base62-encoded GUID (e.g. `N_4kVm2xRp8bNw3yLq9dJs`). ReadGraph always outputs this form. **Preserve these IDs when writing back** — they are the node's stable identity.
+  - **New nodes**: `N_new<int>` — temporary ID for nodes you are creating (e.g. `N_new0`, `N_new1`). The system assigns a real GUID after WriteGraph.
 - `<ClassName>`: UMaterialExpression class name (e.g. `MaterialExpressionMultiply`, `MaterialExpressionConstant3Vector`)
 - `{...}`: non-default properties, single line
-- `#<guid>`: preserve for existing nodes, omit for new
 
 ### Connections
 
 **Connections are declared on the source (output) node only.** Each `>` line under a node declares where that node's output goes. There is no "reverse" declaration — if a node has no `>` lines, it has no outgoing connections.
 
 ```
-  > OutputPin -> N<target>.InputPin     # named output to named input
+  > OutputPin -> N_<target>.InputPin    # named output to named input
   > OutputPin -> [GraphOutput]          # named output to material output
-  > -> N<target>.InputPin               # single-output node to named input
-  > -> N<target>                        # single-output to single-input (both omitted)
+  > -> N_<target>.InputPin              # single-output node to named input
+  > -> N_<target>                       # single-output to single-input (both omitted)
 ```
 
 **CRITICAL — Orphan cleanup:** After WriteGraph, any node not reachable from the material output pins is **automatically deleted** as an orphan. This means:
@@ -130,8 +131,8 @@ Some nodes have multiple named outputs. Use the output name before `->`:
 
 Example — ScreenPosition with named output:
 ```
-N0 MaterialExpressionScreenPosition
-  > ViewportUV -> N1.A
+N_4kVm2xRp8bNw3yLq9dJs MaterialExpressionScreenPosition
+  > ViewportUV -> N_7tHn5cWs1fPx6zMr0gKu.A
 ```
 
 ### Common Input Pin Names
@@ -204,7 +205,7 @@ Material output pins are expressed as `[PinName]`:
 | `MaterialExpressionDotProduct` | `A`, `B` | *(none)* | Dot(A, B) → float1 |
 | `MaterialExpressionCrossProduct` | `A`, `B` | *(none)* | Cross(A, B) → float3 |
 | `MaterialExpressionDistance` | `A`, `B` | *(none)* | Distance(A, B) → float1 |
-| `MaterialExpressionAppendVector` | `A`, `B` | *(none — both inputs required)* | Append(A, B) — combine components (e.g. float1+float1→float2) |
+| `MaterialExpressionAppendVector` | `A`, `B` | *(none — both inputs required)* | Append(A, B) — concatenates dimensions. **Max output is float4.** float1+float1→float2, float2+float2→float4. float3+float2 or larger **FAILS**. |
 
 `ConstA`/`ConstB` are **only available on the four basic arithmetic nodes** (Multiply, Add, Subtract, Divide). They provide a scalar fallback when the corresponding input pin is unconnected. All other binary nodes require explicit input connections — use a `MaterialExpressionConstant` node to supply fixed values.
 
@@ -222,7 +223,7 @@ Material output pins are expressed as `[PinName]`:
 | `MaterialExpressionCeil` | Ceiling |
 | `MaterialExpressionSaturate` | Clamp to 0-1 |
 
-**Trig** (input: `Input`; `Period` property: default 1 maps 0-1 to full cycle; **set `Period:0` for raw radians**):
+**Trig** (input: `Input`; `Period` property: default 1 maps input range [0,1] to one full cycle. **WARNING: `Period:0` is BROKEN** — it injects a float4 multiply that corrupts dimensions. For raw radians use `Period:6.283185` (= 2π), which maps [0, 2π] to one full cycle):
 
 | ClassName | Description |
 |-----------|-------------|
@@ -261,8 +262,47 @@ Material output pins are expressed as `[PinName]`:
 For `MaterialExpressionCustom`, the `Code` property contains HLSL and `InputNames` defines custom inputs:
 
 ```
-N0 MaterialExpressionCustom {Code:"float3 result = Input1 * Input2;\nreturn result;", OutputType:CMOT_Float3, InputNames:["A","B"]} #aabb...
+N_new0 MaterialExpressionCustom {Code:"float3 result = Input1 * Input2;\nreturn result;", OutputType:CMOT_Float3, InputNames:["A","B"]}
 ```
+
+### Defining Functions via Struct Wrapping
+
+UE's Custom node **does support function definitions** — wrap them inside a `struct`. Direct top-level function definitions (`float Foo(){...}`) are rejected by the compiler, but struct member functions work:
+
+```hlsl
+struct MyHelpers
+{
+    float Hash(float t)
+    {
+        return frac(sin(t * 613.2) * 614.8);
+    }
+
+    float2 Hash2D(float t)
+    {
+        return float2(
+            frac(sin(t * 213.3) * 314.8) - 0.5,
+            frac(sin(t * 591.1) * 647.2) - 0.5
+        );
+    }
+
+    float3 Compute(float2 uv, float time)
+    {
+        float h = Hash(time);
+        float2 offset = Hash2D(time);
+        return float3(uv + offset, h);
+    }
+} Helpers;              // <-- instance name after closing brace
+
+return Helpers.Compute(UV, Time);   // call via instance
+```
+
+**Key rules:**
+1. Define a `struct` with all helper functions as member methods.
+2. **Declare an instance** immediately after the closing brace: `} InstanceName;`
+3. Call functions via the instance: `InstanceName.FunctionName(args)`.
+4. Struct methods can call other methods in the same struct freely.
+5. Multiple structs are allowed — each must have its own instance name.
+6. **Prefer struct functions over `#define` macros** — they support proper scoping, recursion-free multi-line logic, and the compiler gives better error messages.
 
 ## Material Instances
 
@@ -279,16 +319,40 @@ Material instance parameter editing uses `SetObjectProperty` from the `unreal-ob
 
 ## Key Rules
 
-1. **Preserve GUIDs** on existing nodes. Losing GUIDs causes unreliable node matching.
+1. **Preserve node IDs** — existing nodes have `N_<base62>` IDs that encode their GUID. Always keep them unchanged when writing back. Use `N_new<int>` only for genuinely new nodes.
 2. **`[Material]` is the complete main graph** — no per-output-pin splitting.
 3. **ReadGraph before WriteGraph** — always read first.
 4. All operations support **Undo** (Ctrl+Z).
 5. **Incremental diff** — only changed nodes/connections are modified.
 6. **Every node needs output connections** — nodes without `> ->` lines that aren't reachable from material outputs will be deleted as orphans. This is especially important for source-only nodes (constants, Time, ScreenPosition, ViewSize, etc.).
 7. **Connections are output-side only** — you declare where a node's output goes by writing `> ->` lines under it. There is no way to declare an incoming connection on the target side.
+8. **Track dimensions through the graph** — UE material nodes have strict type rules. Binary math nodes broadcast (`float1 op floatN → floatN`). `AppendVector` concatenates dimensions with a **max of float4**. `ComponentMask` reduces dimensions. `DotProduct` and `Length` always output float1. When building complex graphs, mentally track the dimension at each node to avoid overflow at `AppendVector`. See the **Dimension Rules** section below.
+9. **Verify all node IDs before writing** — every `N_<id>` referenced in `> ->` connection lines must be defined as a node line in the same graph. Referencing an undefined ID will silently drop that connection.
+10. **Pin name rule** — single-input nodes (`Sine`, `Cosine`, `Abs`, `Saturate`, `OneMinus`, `ComponentMask`, `Length`, etc.) use `Input` as their pin name or omit it entirely. NEVER use `.A` or `.B` for single-input nodes — those names only exist on binary nodes (`Multiply`, `Add`, `DotProduct`, etc.).
+
+## Dimension Rules
+
+UE material compiler enforces strict dimension rules. Track the float-width through your node chain:
+
+| Operation | Output dimension |
+|-----------|-----------------|
+| `Multiply/Add/Subtract/Divide(floatN, floatN)` | floatN |
+| `Multiply/Add/Subtract/Divide(float1, floatN)` | floatN (broadcast) |
+| `AppendVector(floatA, floatB)` | float(A+B), **max float4** |
+| `ComponentMask` with K channels enabled | floatK |
+| `DotProduct(floatN, floatN)` | float1 |
+| `CrossProduct(float3, float3)` | float3 |
+| `Length(floatN)` | float1 |
+| `Distance(floatN, floatN)` | float1 |
+| `Normalize(floatN)` | floatN |
+| `Sine/Cosine/Tangent(floatN)` | floatN |
+| `Abs/OneMinus/Saturate/Frac/Floor/Ceil(floatN)` | floatN |
+| `Arctangent2Fast(float1, float1)` | float1 |
+
+Common pitfall: passing a float2 through `Multiply(float2, float2)` still yields float2, but then `AppendVector(float2, float2)` yields float4. Another `AppendVector` with that float4 will **fail to compile**.
 
 ## Error Handling
 
 - Check `diff` object in response for changes applied.
 - Unknown expression class: `"Unknown expression class: ..."`.
-- Pin not found: `"Input 'X' not found on N0 (ClassName). Available: [...]"`.
+- Pin not found: `"Input 'X' not found on N_... (ClassName). Available: [...]"`.

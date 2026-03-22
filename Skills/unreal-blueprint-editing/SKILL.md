@@ -44,30 +44,31 @@ Names with spaces use underscores: `Function:My_Function`.
 ```
 [Function:CalculateDamage]
 
-N0 FunctionEntry #aabb0001
-  > then -> N5.execute
+N_2kVm4xRp8bNw6yLq0dJs FunctionEntry
+  > then -> N_8nQz4tJi0rAj7mRd3sFg.execute
 
-N1 VariableGet:BaseDamage #aabb0002
-  > -> N3.A
+N_9aEo3jXv2hQy8bFt4iLw VariableGet:BaseDamage
+  > -> N_7tHn5cWs1fPx6zMr0gKu.A
 
-N2 VariableGet:DamageMultiplier #aabb0003
-  > -> N3.B
+N_5fIr7mBz3kTb1eJw9lOa VariableGet:DamageMultiplier
+  > -> N_7tHn5cWs1fPx6zMr0gKu.B
 
-N3 CallFunction:KismetMathLibrary.Multiply_FloatFloat #aabb0004
-  > ReturnValue -> N4.Value
+N_7tHn5cWs1fPx6zMr0gKu CallFunction:KismetMathLibrary.Multiply_FloatFloat
+  > ReturnValue -> N_0hKt8nDc5lUd2gLx6mPb.Value
 
-N4 CallFunction:KismetMathLibrary.FClamp {pin.Min:0, pin.Max:9999} #aabb0005
-  > ReturnValue -> N5.ReturnValue
+N_0hKt8nDc5lUd2gLx6mPb CallFunction:KismetMathLibrary.FClamp {pin.Min:0, pin.Max:9999}
+  > ReturnValue -> N_8nQz4tJi0rAj7mRd3sFg.ReturnValue
 
-N5 FunctionResult #aabb0006
+N_8nQz4tJi0rAj7mRd3sFg FunctionResult
 ```
 
 ### Nodes
 
-- `N<idx>`: local reference ID, 0-based
+- `N_<id>`: node reference ID. Two forms:
+  - **Existing nodes**: `N_<base62>` — a 22-character Base62-encoded GUID (e.g. `N_2kVm4xRp8bNw6yLq0dJs`). ReadGraph always outputs this form. **Preserve these IDs when writing back.**
+  - **New nodes**: `N_new<int>` — temporary ID for nodes you are creating (e.g. `N_new0`, `N_new1`). The system assigns a real GUID after WriteGraph.
 - `<ClassName>`: semantic encoding (see below) or raw UE class name
 - `{...}`: non-default properties, single line. Omit braces if none.
-- `#<guid>`: 32-hex GUID. **Preserve for existing nodes, omit for new nodes.**
 
 ### ClassName Encoding
 
@@ -89,9 +90,9 @@ Other node types use their raw class name (e.g. `K2Node_IfThenElse`, `K2Node_For
 Output connections from the owning node, indented with `>`:
 
 ```
-  > OutputPin -> N<target>.InputPin     # output to target
+  > OutputPin -> N_<target>.InputPin    # output to target
   > OutputPin -> [GraphOutput]          # output to graph output
-  > -> N<target>.InputPin               # single-output node (omit pin name)
+  > -> N_<target>.InputPin              # single-output node (omit pin name)
 ```
 
 Pin names match UE's internal `PinName`. Common exec pins: `execute`, `then`.
@@ -143,7 +144,7 @@ The `[Variables]` section uses **full overwrite** semantics:
 
 1. **Read on-demand, not all at once.** Outline first, then ReadGraph only the sections you need.
 2. **Translate to pseudocode after reading** — understand the logic before editing.
-3. **Preserve GUIDs** on existing nodes. Omit for new nodes. **Losing GUIDs on same-type nodes causes unreliable matching.**
+3. **Preserve node IDs** — existing nodes have `N_<base62>` IDs that encode their GUID. Always keep them unchanged when writing back. Use `N_new<int>` only for genuinely new nodes.
 4. **ReadGraph before WriteGraph** — always read the target section before writing.
 5. **FunctionEntry and FunctionResult cannot be created or deleted.**
 6. All operations support **Undo** (Ctrl+Z).
