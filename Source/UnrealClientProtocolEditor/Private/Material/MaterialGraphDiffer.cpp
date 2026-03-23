@@ -10,6 +10,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustomOutput.h"
 #include "Materials/MaterialExpressionRerouteBase.h"
 #include "Materials/MaterialExpressionCustom.h"
@@ -17,6 +18,7 @@
 #include "Materials/MaterialExpressionSetMaterialAttributes.h"
 #include "Materials/MaterialAttributeDefinitionMap.h"
 #include "MaterialEditingLibrary.h"
+#include "ShaderCompiler.h"
 #include "UObject/UnrealType.h"
 #include "ScopedTransaction.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -200,33 +202,6 @@ void FMaterialGraphDiffer::MatchNodes(
 		}
 	}
 
-	// Pass 3: ClassName alone
-	TMultiMap<FString, int32> UnmatchedOldByClass;
-	for (int32 OldIdx = 0; OldIdx < OldIR.Nodes.Num(); ++OldIdx)
-	{
-		if (!MatchedOld.Contains(OldIdx))
-		{
-			UnmatchedOldByClass.Add(OldIR.Nodes[OldIdx].ClassName, OldIdx);
-		}
-	}
-
-	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
-	{
-		if (OutNewToOld.Contains(NewIdx))
-		{
-			continue;
-		}
-
-		const FString& ClassName = NewIR.Nodes[NewIdx].ClassName;
-		for (auto It = UnmatchedOldByClass.CreateKeyIterator(ClassName); It; ++It)
-		{
-			int32 OldIdx = It.Value();
-			OutNewToOld.Add(NewIdx, OldIdx);
-			MatchedOld.Add(OldIdx);
-			It.RemoveCurrent();
-			break;
-		}
-	}
 }
 
 // ---- Apply Properties ----
@@ -305,9 +280,16 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 	UMaterial* Material,
 	UMaterialFunction* MaterialFunction,
 	const FString& CompositeName,
-	const FNodeCodeGraphIR& NewIR)
+	FNodeCodeGraphIR NewIR)
 {
 	FNodeCodeDiffResult Result;
+
+	TArray<FString> ValidationWarnings;
+	FNodeCodeTextFormat::ValidateGraph(NewIR, ValidationWarnings);
+	for (const FString& W : ValidationWarnings)
+	{
+		UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: %s"), *W);
+	}
 
 	FNodeCodeGraphIR OldIR;
 	if (Material)
@@ -357,12 +339,12 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			{
 				UMaterialEditingLibrary::DeleteMaterialExpressionInFunction(MaterialFunction, OldExpr);
 			}
-			Result.NodesRemoved.Add(FString::Printf(TEXT("N%d %s"), OldNode.Index, *OldNode.ClassName));
+			Result.NodesRemoved.Add(FString::Printf(TEXT("N_%s %s"), *OldNode.Index, *OldNode.ClassName));
 		}
 	}
 
 	// Phase 2: Create
-	TMap<int32, UMaterialExpression*> NewIndexToExpr;
+	TMap<FString, UMaterialExpression*> NewIndexToExpr;
 
 	for (int32 NewIdx = 0; NewIdx < NewIR.Nodes.Num(); ++NewIdx)
 	{
@@ -401,7 +383,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			ApplyPropertyChanges(NewExpr, NewNode.Properties, Changes);
 
 			NewIndexToExpr.Add(NewNode.Index, NewExpr);
-			Result.NodesAdded.Add(FString::Printf(TEXT("N%d %s"), NewNode.Index, *NewNode.ClassName));
+			Result.NodesAdded.Add(FString::Printf(TEXT("N_%s %s"), *NewNode.Index, *NewNode.ClassName));
 		}
 	}
 
@@ -449,8 +431,8 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 
 			if (Changes.Num() > 0)
 			{
-				Result.NodesModified.Add(FString::Printf(TEXT("N%d: %s"),
-					NewNode.Index, *FString::Join(Changes, TEXT("; "))));
+				Result.NodesModified.Add(FString::Printf(TEXT("N_%s: %s"),
+					*NewNode.Index, *FString::Join(Changes, TEXT("; "))));
 			}
 		}
 	}
@@ -499,6 +481,18 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			}
 		}
 
+		// Fallback: if only one input exists, accept any name
+		int32 InputCount = 0;
+		for (int32 i = 0; ; ++i)
+		{
+			if (!Expr->GetInput(i)) break;
+			InputCount++;
+		}
+		if (InputCount == 1)
+		{
+			return 0;
+		}
+
 		return INDEX_NONE;
 	};
 
@@ -529,14 +523,14 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		UMaterialExpression** FromExprPtr = NewIndexToExpr.Find(Link.FromNodeIndex);
 		if (!FromExprPtr || !*FromExprPtr)
 		{
-			UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Link source N%d not found"), Link.FromNodeIndex);
+			UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Link source N_%s not found"), *Link.FromNodeIndex);
 			continue;
 		}
 
 		int32 FromOutputIndex = FindOutputIndexByName(*FromExprPtr, Link.FromOutputName);
 		if (FromOutputIndex == INDEX_NONE)
 		{
-			UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Output '%s' not found on N%d"), *Link.FromOutputName, Link.FromNodeIndex);
+			UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Output '%s' not found on N_%s"), *Link.FromOutputName, *Link.FromNodeIndex);
 			continue;
 		}
 
@@ -559,7 +553,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			UMaterialExpression** ToExprPtr = NewIndexToExpr.Find(Link.ToNodeIndex);
 			if (!ToExprPtr || !*ToExprPtr)
 			{
-				UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Link target N%d not found"), Link.ToNodeIndex);
+				UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Link target N_%s not found"), *Link.ToNodeIndex);
 				continue;
 			}
 
@@ -574,8 +568,8 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 					if (!AvailableInputs.IsEmpty()) AvailableInputs += TEXT(", ");
 					AvailableInputs += (*ToExprPtr)->GetInputName(DbgIdx).ToString();
 				}
-				UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Input '%s' not found on N%d (%s). Available: [%s]"),
-					*Link.ToInputName, Link.ToNodeIndex, *(*ToExprPtr)->GetClass()->GetName(), *AvailableInputs);
+					UE_LOG(LogUCPMaterial, Warning, TEXT("WriteGraph: Input '%s' not found on N_%s (%s). Available: [%s]"),
+					*Link.ToInputName, *Link.ToNodeIndex, *(*ToExprPtr)->GetClass()->GetName(), *AvailableInputs);
 				continue;
 			}
 
@@ -588,6 +582,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 		Desired.FromExpr = *FromExprPtr;
 		Desired.OutputIndex = FromOutputIndex;
 		Desired.ToInput = TargetInput;
+
 		DesiredLinks.Add(Desired);
 
 		bool bAlreadyConnected = (TargetInput->Expression == *FromExprPtr && TargetInput->OutputIndex == FromOutputIndex);
@@ -619,7 +614,7 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 
 			if (!DesiredLinks.Contains(Live))
 			{
-				Result.LinksRemoved.Add(FString::Printf(TEXT("N?->N%d.%s"), Pair.Key, *Expr->GetInputName(It.Index).ToString()));
+				Result.LinksRemoved.Add(FString::Printf(TEXT("N_?->N_%s.%s"), *Pair.Key, *Expr->GetInputName(It.Index).ToString()));
 				It->Expression = nullptr;
 			}
 		}
@@ -663,22 +658,31 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			Material->MaterialGraph->RebuildGraph();
 		}
 
-		if (Material->MaterialGraph)
 		{
-			TArray<UEdGraphNode*> UnusedNodes;
-			Material->MaterialGraph->GetUnusedExpressions(UnusedNodes);
-			for (UEdGraphNode* Node : UnusedNodes)
+			TSet<UMaterialExpression*> ReachableExprs;
+			FMaterialGraphSerializer::CollectAllConnectedNodes(Material, ReachableExprs);
+
+			TArray<UMaterialExpression*> OrphanedExprs;
+			for (const auto& Expr : Material->GetExpressions())
 			{
-				UMaterialGraphNode* GraphNode = Cast<UMaterialGraphNode>(Node);
-				if (!GraphNode || !GraphNode->MaterialExpression) continue;
+				if (!Expr) continue;
+				if (Cast<UMaterialExpressionComment>(Expr.Get())) continue;
+				if (!ReachableExprs.Contains(Expr.Get()))
+				{
+					OrphanedExprs.Add(Expr.Get());
+				}
+			}
+
+			for (UMaterialExpression* Expr : OrphanedExprs)
+			{
 				Result.NodesRemoved.Add(FString::Printf(TEXT("(orphaned) %s"),
-					*FNodeCodeClassCache::Get().GetSerializableName(GraphNode->MaterialExpression->GetClass())));
-				UMaterialExpression* Expr = GraphNode->MaterialExpression;
+					*FNodeCodeClassCache::Get().GetSerializableName(Expr->GetClass())));
 				Material->GetExpressionCollection().RemoveExpression(Expr);
 				Material->RemoveExpressionParameter(Expr);
 				Expr->MarkAsGarbage();
 			}
-			if (UnusedNodes.Num() > 0)
+
+			if (OrphanedExprs.Num() > 0 && Material->MaterialGraph)
 			{
 				Material->MaterialGraph->RebuildGraph();
 			}
@@ -692,6 +696,29 @@ FNodeCodeDiffResult FMaterialGraphDiffer::DiffAndApply(
 			UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
 		}
 		UMaterialEditingLibrary::RecompileMaterial(Material);
+		GShaderCompilingManager->FinishAllCompilation();
+
+		const FMaterialResource* MatResource = Material->GetMaterialResource(GMaxRHIShaderPlatform);
+		if (MatResource)
+		{
+			const TArray<FString>& CompileErrors = MatResource->GetCompileErrors();
+			const TArray<UMaterialExpression*>& FailExprs = MatResource->GetErrorExpressions();
+			for (int32 ErrIdx = 0; ErrIdx < CompileErrors.Num(); ++ErrIdx)
+			{
+				FString Entry;
+				if (ErrIdx < FailExprs.Num() && FailExprs[ErrIdx])
+				{
+					FString NodeId = NodeCodeUtils::GuidToBase62(FailExprs[ErrIdx]->MaterialExpressionGuid);
+					FString ClassName = FNodeCodeClassCache::Get().GetSerializableName(FailExprs[ErrIdx]->GetClass());
+					Entry = FString::Printf(TEXT("N_%s (%s): %s"), *NodeId, *ClassName, *CompileErrors[ErrIdx]);
+				}
+				else
+				{
+					Entry = CompileErrors[ErrIdx];
+				}
+				Result.CompileErrors.Add(Entry);
+			}
+		}
 
 		if (GEditor)
 		{

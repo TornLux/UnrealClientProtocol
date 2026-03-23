@@ -21,16 +21,6 @@ bool FNodeCodeTextFormat::ParseNodeLine(const FString& Line, FNodeCodeNodeIR& Ou
 	FString Working = Line;
 
 	OutNode.Guid.Invalidate();
-	int32 HashPos;
-	if (Working.FindLastChar('#', HashPos))
-	{
-		FString GuidStr = Working.Mid(HashPos + 1).TrimStartAndEnd();
-		if (GuidStr.Len() >= 32)
-		{
-			FGuid::Parse(GuidStr, OutNode.Guid);
-		}
-		Working = Working.Left(HashPos).TrimEnd();
-	}
 
 	int32 BraceOpen, BraceClose;
 	if (Working.FindChar('{', BraceOpen) && Working.FindLastChar('}', BraceClose) && BraceClose > BraceOpen)
@@ -92,21 +82,26 @@ bool FNodeCodeTextFormat::ParseNodeLine(const FString& Line, FNodeCodeNodeIR& Ou
 		return false;
 	}
 
-	FString IndexStr = Working.Left(SpacePos);
-	if (!IndexStr.StartsWith(TEXT("N")))
+	FString IdToken = Working.Left(SpacePos);
+	if (!IdToken.StartsWith(TEXT("N_")))
 	{
 		return false;
 	}
 
-	OutNode.Index = FCString::Atoi(*IndexStr.Mid(1));
+	OutNode.Index = IdToken.Mid(2);
 	OutNode.ClassName = Working.Mid(SpacePos + 1).TrimStartAndEnd();
+
+	if (NodeCodeUtils::IsBase62Id(OutNode.Index))
+	{
+		OutNode.Guid = NodeCodeUtils::Base62ToGuid(OutNode.Index);
+	}
 
 	return !OutNode.ClassName.IsEmpty();
 }
 
 // ---- Link Line Parsing ----
 
-bool FNodeCodeTextFormat::ParseLinkLine(const FString& Line, int32 OwnerNodeIndex, FNodeCodeLinkIR& OutLink)
+bool FNodeCodeTextFormat::ParseLinkLine(const FString& Line, const FString& OwnerNodeIndex, FNodeCodeLinkIR& OutLink)
 {
 	FString Working = Line.TrimStartAndEnd();
 	if (!Working.RemoveFromStart(TEXT(">")))
@@ -138,7 +133,7 @@ bool FNodeCodeTextFormat::ParseLinkLine(const FString& Line, int32 OwnerNodeInde
 	{
 		OutLink.bToGraphOutput = true;
 		OutLink.ToInputName = ToStr.Mid(1, ToStr.Len() - 2);
-		OutLink.ToNodeIndex = -1;
+		OutLink.ToNodeIndex.Empty();
 	}
 	else
 	{
@@ -147,20 +142,20 @@ bool FNodeCodeTextFormat::ParseLinkLine(const FString& Line, int32 OwnerNodeInde
 		if (ToStr.FindChar('.', DotPos))
 		{
 			FString NodeStr = ToStr.Left(DotPos);
-			if (!NodeStr.StartsWith(TEXT("N")))
+			if (!NodeStr.StartsWith(TEXT("N_")))
 			{
 				return false;
 			}
-			OutLink.ToNodeIndex = FCString::Atoi(*NodeStr.Mid(1));
+			OutLink.ToNodeIndex = NodeStr.Mid(2);
 			OutLink.ToInputName = ToStr.Mid(DotPos + 1);
 		}
 		else
 		{
-			if (!ToStr.StartsWith(TEXT("N")))
+			if (!ToStr.StartsWith(TEXT("N_")))
 			{
 				return false;
 			}
-			OutLink.ToNodeIndex = FCString::Atoi(*ToStr.Mid(1));
+			OutLink.ToNodeIndex = ToStr.Mid(2);
 			OutLink.ToInputName.Empty();
 		}
 	}
@@ -172,7 +167,7 @@ bool FNodeCodeTextFormat::ParseLinkLine(const FString& Line, int32 OwnerNodeInde
 
 void FNodeCodeTextFormat::ParseGraphLines(const TArray<FString>& Lines, FNodeCodeGraphIR& OutGraph)
 {
-	int32 CurrentNodeIndex = -1;
+	FString CurrentNodeIndex;
 
 	for (const FString& RawLine : Lines)
 	{
@@ -182,8 +177,7 @@ void FNodeCodeTextFormat::ParseGraphLines(const TArray<FString>& Lines, FNodeCod
 			continue;
 		}
 
-		if (Line.StartsWith(TEXT("N")) && !Line.StartsWith(TEXT("N "))
-			&& Line.Len() > 1 && FChar::IsDigit(Line[1]))
+		if (Line.StartsWith(TEXT("N_")))
 		{
 			FNodeCodeNodeIR Node;
 			if (ParseNodeLine(Line, Node))
@@ -197,7 +191,7 @@ void FNodeCodeTextFormat::ParseGraphLines(const TArray<FString>& Lines, FNodeCod
 		FString Trimmed = Line;
 		if (Trimmed.StartsWith(TEXT(">")))
 		{
-			if (CurrentNodeIndex >= 0)
+			if (!CurrentNodeIndex.IsEmpty())
 			{
 				FNodeCodeLinkIR Link;
 				if (ParseLinkLine(Trimmed, CurrentNodeIndex, Link))
@@ -239,7 +233,7 @@ FString FNodeCodeTextFormat::GraphToText(const FNodeCodeGraphIR& IR)
 {
 	FString Result;
 
-	TMap<int32, TArray<const FNodeCodeLinkIR*>> NodeLinks;
+	TMap<FString, TArray<const FNodeCodeLinkIR*>> NodeLinks;
 	for (const FNodeCodeLinkIR& Link : IR.Links)
 	{
 		NodeLinks.FindOrAdd(Link.FromNodeIndex).Add(&Link);
@@ -247,7 +241,7 @@ FString FNodeCodeTextFormat::GraphToText(const FNodeCodeGraphIR& IR)
 
 	for (const FNodeCodeNodeIR& Node : IR.Nodes)
 	{
-		Result += FString::Printf(TEXT("N%d %s"), Node.Index, *Node.ClassName);
+		Result += FString::Printf(TEXT("N_%s %s"), *Node.Index, *Node.ClassName);
 
 		if (Node.Properties.Num() > 0)
 		{
@@ -263,11 +257,6 @@ FString FNodeCodeTextFormat::GraphToText(const FNodeCodeGraphIR& IR)
 				bFirst = false;
 			}
 			Result += TEXT("}");
-		}
-
-		if (Node.Guid.IsValid())
-		{
-			Result += FString::Printf(TEXT(" #%s"), *Node.Guid.ToString(EGuidFormats::DigitsLower));
 		}
 
 		Result += TEXT("\n");
@@ -289,11 +278,11 @@ FString FNodeCodeTextFormat::GraphToText(const FNodeCodeGraphIR& IR)
 				}
 				else if (!Link->ToInputName.IsEmpty())
 				{
-					ToPart = FString::Printf(TEXT("N%d.%s"), Link->ToNodeIndex, *Link->ToInputName);
+					ToPart = FString::Printf(TEXT("N_%s.%s"), *Link->ToNodeIndex, *Link->ToInputName);
 				}
 				else
 				{
-					ToPart = FString::Printf(TEXT("N%d"), Link->ToNodeIndex);
+					ToPart = FString::Printf(TEXT("N_%s"), *Link->ToNodeIndex);
 				}
 
 				if (FromPart.IsEmpty())
@@ -464,6 +453,35 @@ FNodeCodeDocumentIR FNodeCodeTextFormat::ParseDocument(const FString& Text)
 	return Document;
 }
 
+// ---- Validation ----
+
+void FNodeCodeTextFormat::ValidateGraph(FNodeCodeGraphIR& Graph, TArray<FString>& OutWarnings)
+{
+	TSet<FString> DefinedNodes;
+	for (const FNodeCodeNodeIR& Node : Graph.Nodes)
+	{
+		DefinedNodes.Add(Node.Index);
+	}
+
+	for (int32 i = Graph.Links.Num() - 1; i >= 0; --i)
+	{
+		const FNodeCodeLinkIR& Link = Graph.Links[i];
+
+		if (!DefinedNodes.Contains(Link.FromNodeIndex))
+		{
+			OutWarnings.Add(FString::Printf(TEXT("Link source N_%s not defined"), *Link.FromNodeIndex));
+			Graph.Links.RemoveAt(i);
+			continue;
+		}
+
+		if (!Link.bToGraphOutput && !DefinedNodes.Contains(Link.ToNodeIndex))
+		{
+			OutWarnings.Add(FString::Printf(TEXT("Link target N_%s not defined"), *Link.ToNodeIndex));
+			Graph.Links.RemoveAt(i);
+		}
+	}
+}
+
 // ---- Diff Result ----
 
 FString FNodeCodeTextFormat::DiffResultToJson(const FNodeCodeDiffResult& Result)
@@ -487,6 +505,10 @@ FString FNodeCodeTextFormat::DiffResultToJson(const FNodeCodeDiffResult& Result)
 	Diff->SetArrayField(TEXT("nodes_modified"), ToJsonArray(Result.NodesModified));
 	Diff->SetArrayField(TEXT("links_added"), ToJsonArray(Result.LinksAdded));
 	Diff->SetArrayField(TEXT("links_removed"), ToJsonArray(Result.LinksRemoved));
+	if (Result.CompileErrors.Num() > 0)
+	{
+		Diff->SetArrayField(TEXT("compile_errors"), ToJsonArray(Result.CompileErrors));
+	}
 	Root->SetObjectField(TEXT("diff"), Diff);
 
 	FString OutputString;

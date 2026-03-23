@@ -258,8 +258,7 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 		}
 	}
 
-	TMap<UMaterialExpression*, int32> ExprToNodeIndex;
-	int32 NodeCounter = 0;
+	TMap<UMaterialExpression*, FString> ExprToNodeIndex;
 
 	for (const TObjectPtr<UMaterialExpression>& Expr : AllExpressions)
 	{
@@ -280,17 +279,18 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 			continue;
 		}
 
+		FString NodeId = NodeCodeUtils::GuidToBase62(Expr->MaterialExpressionGuid);
+
 		FNodeCodeNodeIR Node;
-		Node.Index = NodeCounter;
+		Node.Index = NodeId;
 		Node.SourceObject = Expr.Get();
 		Node.Guid = Expr->MaterialExpressionGuid;
 		Node.ClassName = FNodeCodeClassCache::Get().GetSerializableName(Expr->GetClass());
 
 		SerializeNodeProperties(Expr.Get(), Node.Properties);
 
-		ExprToNodeIndex.Add(Expr.Get(), NodeCounter);
+		ExprToNodeIndex.Add(Expr.Get(), NodeId);
 		IR.Nodes.Add(MoveTemp(Node));
-		NodeCounter++;
 	}
 
 	if (Material && !bScopeIsComposite)
@@ -310,16 +310,15 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 				return;
 			}
 
-			int32* FromIdx = ExprToNodeIndex.Find(RealExpr);
-			if (!FromIdx)
+			FString* FromId = ExprToNodeIndex.Find(RealExpr);
+			if (!FromId)
 			{
 				return;
 			}
 
 			FNodeCodeLinkIR Link;
-			Link.FromNodeIndex = *FromIdx;
+			Link.FromNodeIndex = *FromId;
 			Link.FromOutputName = GetOutputPinName(RealExpr, OutIdx);
-			Link.ToNodeIndex = -1;
 			Link.ToInputName = PinName;
 			Link.bToGraphOutput = true;
 			IR.Links.Add(MoveTemp(Link));
@@ -341,8 +340,8 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 		Material->GetAllCustomOutputExpressions(CustomOutputs);
 		for (UMaterialExpressionCustomOutput* CustomOut : CustomOutputs)
 		{
-			int32* ToIdx = ExprToNodeIndex.Find(CustomOut);
-			if (!ToIdx)
+			FString* ToId = ExprToNodeIndex.Find(CustomOut);
+			if (!ToId)
 			{
 				continue;
 			}
@@ -361,16 +360,16 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 					continue;
 				}
 
-				int32* FromIdx = ExprToNodeIndex.Find(RealExpr);
-				if (!FromIdx)
+				FString* FromId = ExprToNodeIndex.Find(RealExpr);
+				if (!FromId)
 				{
 					continue;
 				}
 
 				FNodeCodeLinkIR Link;
-				Link.FromNodeIndex = *FromIdx;
+				Link.FromNodeIndex = *FromId;
 				Link.FromOutputName = GetOutputPinName(RealExpr, OutIdx);
-				Link.ToNodeIndex = *ToIdx;
+				Link.ToNodeIndex = *ToId;
 				Link.ToInputName = ShortenInputPinName(CustomOut->GetInputName(It.Index).ToString());
 				Link.bToGraphOutput = false;
 				IR.Links.Add(MoveTemp(Link));
@@ -401,14 +400,14 @@ FNodeCodeGraphIR FMaterialGraphSerializer::BuildIRFromExpressions(
 				continue;
 			}
 
-			int32* FromIdx = ExprToNodeIndex.Find(RealExpr);
-			if (!FromIdx)
+			FString* FromId = ExprToNodeIndex.Find(RealExpr);
+			if (!FromId)
 			{
 				continue;
 			}
 
 			FNodeCodeLinkIR Link;
-			Link.FromNodeIndex = *FromIdx;
+			Link.FromNodeIndex = *FromId;
 			Link.FromOutputName = GetOutputPinName(RealExpr, OutIdx);
 			Link.ToNodeIndex = Node.Index;
 			Link.ToInputName = ShortenInputPinName(Expr->GetInputName(It.Index).ToString());

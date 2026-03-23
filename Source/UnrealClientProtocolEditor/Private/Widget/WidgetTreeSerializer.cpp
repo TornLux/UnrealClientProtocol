@@ -3,6 +3,7 @@
 #include "Widget/WidgetTreeSerializer.h"
 #include "NodeCode/NodeCodeClassCache.h"
 #include "NodeCode/NodeCodePropertyUtils.h"
+#include "NodeCode/NodeCodeTypes.h"
 
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
@@ -10,6 +11,7 @@
 #include "Components/PanelWidget.h"
 #include "Components/PanelSlot.h"
 #include "UObject/UnrealType.h"
+#include "UObject/LazyObjectPtr.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonWriter.h"
@@ -54,8 +56,15 @@ void FWidgetTreeSerializer::SerializeWidget(UWidget* Widget, int32 Depth, FStrin
 
 	FString ClassName = FNodeCodeClassCache::Get().GetSerializableName(Widget->GetClass());
 
+	FUniqueObjectGuid UniqueGuid = FUniqueObjectGuid::GetOrCreateIDForObject(Widget);
+
 	TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
 	JsonObj->SetStringField(TEXT("Type"), ClassName);
+
+	if (UniqueGuid.IsValid())
+	{
+		JsonObj->SetStringField(TEXT("Id"), NodeCodeUtils::GuidToBase62(UniqueGuid.GetGuid()));
+	}
 
 	if (Widget->bIsVariable)
 	{

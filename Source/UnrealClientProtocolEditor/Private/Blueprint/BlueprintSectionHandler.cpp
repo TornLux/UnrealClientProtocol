@@ -404,3 +404,34 @@ FNodeCodeDiffResult FBlueprintSectionHandler::WriteVariables(UBlueprint* Bluepri
 
 	return Result;
 }
+
+UObject* FBlueprintSectionHandler::FindNodeByGuid(UObject* Asset, const FGuid& Guid)
+{
+	UBlueprint* Blueprint = Cast<UBlueprint>(Asset);
+	if (!Blueprint)
+	{
+		return nullptr;
+	}
+
+	auto SearchGraphs = [&Guid](const TArray<TObjectPtr<UEdGraph>>& Graphs) -> UObject*
+	{
+		for (const auto& Graph : Graphs)
+		{
+			if (!Graph) continue;
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node && Node->NodeGuid == Guid)
+				{
+					return Node;
+				}
+			}
+		}
+		return nullptr;
+	};
+
+	if (UObject* Found = SearchGraphs(Blueprint->UbergraphPages)) return Found;
+	if (UObject* Found = SearchGraphs(Blueprint->FunctionGraphs)) return Found;
+	if (UObject* Found = SearchGraphs(Blueprint->MacroGraphs)) return Found;
+
+	return nullptr;
+}

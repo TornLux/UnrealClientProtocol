@@ -13,7 +13,7 @@ enum class ENodeCodeSectionFormat : uint8
 
 struct FNodeCodeNodeIR
 {
-	int32 Index = -1;
+	FString Index;
 	FString ClassName;
 	FGuid Guid;
 	TMap<FString, FString> Properties;
@@ -22,9 +22,9 @@ struct FNodeCodeNodeIR
 
 struct FNodeCodeLinkIR
 {
-	int32 FromNodeIndex = -1;
+	FString FromNodeIndex;
 	FString FromOutputName;
-	int32 ToNodeIndex = -1;
+	FString ToNodeIndex;
 	FString ToInputName;
 	bool bToGraphOutput = false;
 };
@@ -62,6 +62,82 @@ struct FNodeCodeDocumentIR
 
 namespace NodeCodeUtils
 {
+	static constexpr int32 Base62IdLen = 22;
+	static const TCHAR Base62Chars[] = TEXT("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
+
+	inline FString GuidToBase62(const FGuid& G)
+	{
+		uint64 Hi = (static_cast<uint64>(G.A) << 32) | static_cast<uint64>(G.B);
+		uint64 Lo = (static_cast<uint64>(G.C) << 32) | static_cast<uint64>(G.D);
+
+		TCHAR Buf[Base62IdLen + 1];
+		Buf[Base62IdLen] = 0;
+
+		for (int32 i = Base62IdLen - 1; i >= 0; --i)
+		{
+			uint64 Remainder = 0;
+
+			// 128-bit division by 62: divide (Hi:Lo) by 62
+			Remainder = Hi % 62;
+			Hi = Hi / 62;
+			uint64 Combined = (Remainder << 32) | (Lo >> 32);
+			uint64 QHi32 = Combined / 62;
+			Remainder = Combined % 62;
+			Combined = (Remainder << 32) | (Lo & 0xFFFFFFFF);
+			uint64 QLo32 = Combined / 62;
+			Remainder = Combined % 62;
+
+			Lo = (QHi32 << 32) | QLo32;
+
+			Buf[i] = Base62Chars[Remainder];
+		}
+
+		return FString(Base62IdLen, Buf);
+	}
+
+	inline FGuid Base62ToGuid(const FString& Str)
+	{
+		if (Str.Len() != Base62IdLen) return FGuid();
+
+		uint64 Hi = 0, Lo = 0;
+
+		for (int32 i = 0; i < Base62IdLen; ++i)
+		{
+			TCHAR Ch = Str[i];
+			int32 Val;
+			if (Ch >= '0' && Ch <= '9') Val = Ch - '0';
+			else if (Ch >= 'a' && Ch <= 'z') Val = 10 + (Ch - 'a');
+			else if (Ch >= 'A' && Ch <= 'Z') Val = 36 + (Ch - 'A');
+			else return FGuid();
+
+			// 128-bit multiply by 62 then add: (Hi:Lo) = (Hi:Lo)*62 + Val
+			uint64 LoLo = (Lo & 0xFFFFFFFF) * 62;
+			uint64 LoHi = (Lo >> 32) * 62 + (LoLo >> 32);
+			Lo = ((LoHi & 0xFFFFFFFF) << 32) | (LoLo & 0xFFFFFFFF);
+			Hi = Hi * 62 + (LoHi >> 32);
+
+			Lo += Val;
+			if (Lo < static_cast<uint64>(Val)) Hi++;
+		}
+
+		return FGuid(
+			static_cast<uint32>(Hi >> 32),
+			static_cast<uint32>(Hi & 0xFFFFFFFF),
+			static_cast<uint32>(Lo >> 32),
+			static_cast<uint32>(Lo & 0xFFFFFFFF)
+		);
+	}
+
+	inline bool IsBase62Id(const FString& Id)
+	{
+		return Id.Len() == Base62IdLen;
+	}
+
+	inline bool IsNewNodeId(const FString& Id)
+	{
+		return Id.StartsWith(TEXT("new"));
+	}
+
 	inline FString EncodeSpaces(const FString& InStr)
 	{
 		return InStr.Replace(TEXT(" "), TEXT("_"));
@@ -107,4 +183,5 @@ struct FNodeCodeDiffResult
 	TArray<FString> NodesModified;
 	TArray<FString> LinksAdded;
 	TArray<FString> LinksRemoved;
+	TArray<FString> CompileErrors;
 };

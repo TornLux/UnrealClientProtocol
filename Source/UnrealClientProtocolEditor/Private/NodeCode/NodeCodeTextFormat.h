@@ -16,6 +16,8 @@ public:
 
 	static FString DiffResultToJson(const FNodeCodeDiffResult& Result);
 
+	static void ValidateGraph(FNodeCodeGraphIR& Graph, TArray<FString>& OutWarnings);
+
 private:
 	static FString GraphToText(const FNodeCodeGraphIR& IR);
 	static FString PropertiesToText(const TMap<FString, FString>& Properties);
@@ -24,5 +26,5 @@ private:
 	static void ParsePropertyLines(const TArray<FString>& Lines, TMap<FString, FString>& OutProperties);
 
 	static bool ParseNodeLine(const FString& Line, FNodeCodeNodeIR& OutNode);
-	static bool ParseLinkLine(const FString& Line, int32 OwnerNodeIndex, FNodeCodeLinkIR& OutLink);
+	static bool ParseLinkLine(const FString& Line, const FString& OwnerNodeIndex, FNodeCodeLinkIR& OutLink);
 };

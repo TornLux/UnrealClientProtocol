@@ -23,7 +23,7 @@ private:
 		UMaterial* Material,
 		UMaterialFunction* MaterialFunction,
 		const FString& CompositeName,
-		const FNodeCodeGraphIR& NewIR);
+		FNodeCodeGraphIR NewIR);
 
 	static void MatchNodes(
 		const FNodeCodeGraphIR& OldIR,

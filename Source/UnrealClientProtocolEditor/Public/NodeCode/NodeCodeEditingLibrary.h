@@ -20,4 +20,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "UCP|NodeCode")
 	static FString WriteGraph(const FString& AssetPath, const FString& Section, const FString& GraphText);
+
+	UFUNCTION(BlueprintCallable, Category = "UCP|NodeCode")
+	static FString ResolveNodeId(const FString& AssetPath, const FString& NodeId);
 };

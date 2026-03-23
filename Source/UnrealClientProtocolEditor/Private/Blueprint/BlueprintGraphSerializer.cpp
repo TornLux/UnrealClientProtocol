@@ -3,6 +3,7 @@
 #include "Blueprint/BlueprintGraphSerializer.h"
 #include "Blueprint/IBlueprintNodeEncoder.h"
 #include "NodeCode/NodeCodePropertyUtils.h"
+#include "NodeCode/NodeCodeTypes.h"
 
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
@@ -113,8 +114,7 @@ FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIR(UEdGraph* Graph)
 		return IR;
 	}
 
-	TMap<UEdGraphNode*, int32> NodeToIndex;
-	int32 NodeCounter = 0;
+	TMap<UEdGraphNode*, FString> NodeToIndex;
 
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
@@ -124,7 +124,8 @@ FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIR(UEdGraph* Graph)
 		}
 
 		FNodeCodeNodeIR NodeIR;
-		NodeIR.Index = NodeCounter;
+		FString NodeId = NodeCodeUtils::GuidToBase62(Node->NodeGuid);
+		NodeIR.Index = NodeId;
 		NodeIR.SourceObject = Node;
 		NodeIR.Guid = Node->NodeGuid;
 		NodeIR.ClassName = FBlueprintNodeEncoderRegistry::Get().EncodeNode(Node);
@@ -132,9 +133,8 @@ FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIR(UEdGraph* Graph)
 		SerializeNodeProperties(Node, NodeIR.Properties);
 		SerializePinDefaults(Node, NodeIR.Properties);
 
-		NodeToIndex.Add(Node, NodeCounter);
+		NodeToIndex.Add(Node, NodeId);
 		IR.Nodes.Add(MoveTemp(NodeIR));
-		NodeCounter++;
 	}
 
 	for (UEdGraphNode* Node : Graph->Nodes)
@@ -144,8 +144,8 @@ FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIR(UEdGraph* Graph)
 			continue;
 		}
 
-		int32* ToIdx = NodeToIndex.Find(Node);
-		if (!ToIdx)
+		FString* ToId = NodeToIndex.Find(Node);
+		if (!ToId)
 		{
 			continue;
 		}
@@ -186,16 +186,16 @@ FNodeCodeGraphIR FBlueprintGraphSerializer::BuildIR(UEdGraph* Graph)
 					continue;
 				}
 
-				int32* FromIdx = NodeToIndex.Find(FromNode);
-				if (!FromIdx)
+				FString* FromId = NodeToIndex.Find(FromNode);
+				if (!FromId)
 				{
 					continue;
 				}
 
 				FNodeCodeLinkIR Link;
-				Link.FromNodeIndex = *FromIdx;
+				Link.FromNodeIndex = *FromId;
 				Link.FromOutputName = NodeCodeUtils::EncodeSpaces(LinkedPin->PinName.ToString());
-				Link.ToNodeIndex = *ToIdx;
+				Link.ToNodeIndex = *ToId;
 				Link.ToInputName = NodeCodeUtils::EncodeSpaces(Pin->PinName.ToString());
 				Link.bToGraphOutput = false;
 				IR.Links.Add(MoveTemp(Link));

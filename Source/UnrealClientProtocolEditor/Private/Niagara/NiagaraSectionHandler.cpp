@@ -288,3 +288,46 @@ bool FNiagaraSectionHandler::RemoveSection(UObject* Asset, const FString& Type, 
 {
 	return false;
 }
+
+UObject* FNiagaraSectionHandler::FindNodeByGuid(UObject* Asset, const FGuid& Guid)
+{
+	auto SearchGraph = [&Guid](UNiagaraScriptSourceBase* SourceBase) -> UObject*
+	{
+		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(SourceBase);
+		if (!Source || !Source->NodeGraph) return nullptr;
+		for (UEdGraphNode* Node : Source->NodeGraph->Nodes)
+		{
+			if (Node && Node->NodeGuid == Guid)
+			{
+				return Node;
+			}
+		}
+		return nullptr;
+	};
+
+	if (UNiagaraSystem* System = Cast<UNiagaraSystem>(Asset))
+	{
+		if (UNiagaraScript* SpawnScript = System->GetSystemSpawnScript())
+		{
+			if (UObject* Found = SearchGraph(SpawnScript->GetLatestSource())) return Found;
+		}
+		if (UNiagaraScript* UpdateScript = System->GetSystemUpdateScript())
+		{
+			if (UObject* Found = SearchGraph(UpdateScript->GetLatestSource())) return Found;
+		}
+	}
+	else if (UNiagaraEmitter* Emitter = Cast<UNiagaraEmitter>(Asset))
+	{
+		FVersionedNiagaraEmitterData* Data = Emitter->GetLatestEmitterData();
+		if (Data)
+		{
+			if (UObject* Found = SearchGraph(Data->GraphSource)) return Found;
+		}
+	}
+	else if (UNiagaraScript* Script = Cast<UNiagaraScript>(Asset))
+	{
+		if (UObject* Found = SearchGraph(Script->GetLatestSource())) return Found;
+	}
+
+	return nullptr;
+}
